@@ -141,14 +141,12 @@ js/node_modules
 js/test-results
 js/playwright-report
 js/*.tgz
-finance_flow/extension
 
 # Jupyter
 .ipynb_checkpoints
 .autoversion
 Untitled*.ipynb
-!finance_flow/extension/finance_flow.json
-!finance_flow/extension/install.json
+finance_flow/extension
 finance_flow/nbextension
 finance_flow/labextension
 
@@ -157,3 +155,7 @@ finance_flow/labextension
 
 # Rust
 target
+
+# Hydra
+outputs/
+multirun/
