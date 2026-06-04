@@ -1,0 +1,6 @@
+task_model:
+  _target_: finance_flow.EvaluateRealPortfolioModel
+  explain: true
+
+callable: /task_model
+explain: true

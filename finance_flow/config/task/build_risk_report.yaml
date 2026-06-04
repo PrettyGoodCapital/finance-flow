@@ -1,0 +1,6 @@
+task_model:
+  _target_: finance_flow.BuildRiskReportModel
+  explain: true
+
+callable: /task_model
+explain: true
