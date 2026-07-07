@@ -1,0 +1,9 @@
+# @package _global_
+
+task_model:
+  _target_: finance_flow.MassiveDailyBarsArtifactModel
+  input_store: ${output}
+  output: ${output}
+  explain: true
+
+callable: /task_model

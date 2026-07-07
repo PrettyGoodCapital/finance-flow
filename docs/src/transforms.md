@@ -45,6 +45,16 @@ result = MassiveDailyBarsNormalizeModel()(
 
 Transforms should validate required fields and fail loudly on corrupt payloads instead of silently fabricating market data.
 
+`MassiveDailyBarsArtifactModel` wraps that transform for artifact workflows. It can optionally expose a raw extract model through `__deps__`, then reads the raw daily aggregate artifact and writes parquet rows keyed by date and ticker.
+
+```python
+from finance_flow import MassiveDailyBarsArtifactContext, MassiveDailyBarsArtifactModel
+
+result = MassiveDailyBarsArtifactModel(input_store=store, output=store)(
+    MassiveDailyBarsArtifactContext(ticker="AAPL", date="2024-01-03")
+)
+```
+
 ## First-Wave Chain Composition
 
 The canonical first-wave chain composes four callable tasks with typed handoffs:

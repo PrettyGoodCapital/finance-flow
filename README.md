@@ -45,6 +45,18 @@ result = MassiveDailyBarsNormalizeModel()(
 )
 ```
 
+Publish normalized daily bars as parquet artifacts:
+
+```python
+from finance_flow import MassiveDailyBarsArtifactContext, MassiveDailyBarsArtifactModel
+
+result = MassiveDailyBarsArtifactModel(input_store=store, output=store)(
+    MassiveDailyBarsArtifactContext(ticker="AAPL", date="2024-01-03")
+)
+```
+
+The artifact task reads `massive/stocks/rest/daily-aggs/json/{date}/{ticker}.json` and writes `massive/stocks/bars/daily/parquet/{date}/{ticker}.parquet`.
+
 ## Documentation
 
 - [Schemas](docs/src/schemas.md)

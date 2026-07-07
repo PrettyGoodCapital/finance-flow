@@ -31,6 +31,7 @@ classifiers = [
 
 dependencies = [
     "ccflow>=0.6.10",
+    "ccflow-etl",
     "finance-datagen",
     "finance-etl",
     "pydantic",
