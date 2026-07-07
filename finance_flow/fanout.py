@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple, Type
 
@@ -17,7 +18,7 @@ class SymbolFanoutModel(CallableModel):
     max_symbols: Optional[int] = Field(default=None, ge=1)
     explain: bool = False
 
-    _contexts: List[ContextType] = PrivateAttr(default_factory=list)
+    _contexts_by_parent: Dict[str, List[ContextType]] = PrivateAttr(default_factory=dict)
 
     @property
     def context_type(self) -> Type[ContextType]:
@@ -58,16 +59,23 @@ class SymbolFanoutModel(CallableModel):
             contexts.append(self.model.context_type.model_validate(values))
         return contexts
 
+    def _context_key(self, context: ContextType) -> str:
+        return json.dumps(context.model_dump(mode="json"), sort_keys=True)
+
     @Flow.deps
     def __deps__(self, context: ContextType) -> List[Tuple[CallableModel, List[ContextType]]]:
-        self._contexts = self._child_contexts(context)
+        context_key = self._context_key(context)
+        self._contexts_by_parent[context_key] = self._child_contexts(context)
         if self.explain:
             return [(self.universe_model, [context])]
-        return [(self.universe_model, [context]), (self.model, self._contexts)]
+        return [(self.universe_model, [context]), (self.model, self._contexts_by_parent[context_key])]
 
     @Flow.call
     def __call__(self, context: ContextType) -> GenericResult:
-        contexts = self._contexts or self._child_contexts(context)
+        context_key = self._context_key(context)
+        contexts = self._contexts_by_parent.get(context_key)
+        if contexts is None:
+            contexts = self._child_contexts(context)
         if self.explain:
             return GenericResult(
                 value={

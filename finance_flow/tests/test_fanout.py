@@ -72,3 +72,19 @@ def test_symbol_fanout_calls_child_model_for_each_symbol():
     assert payload["symbols"] == 2
     assert [output["context"]["ticker"] for output in payload["outputs"]] == ["AAPL", "MSFT"]
     assert [call.ticker for call in child.calls] == ["AAPL", "MSFT"]
+
+
+def test_symbol_fanout_keeps_deps_contexts_per_parent_context():
+    child = FakeChildModel()
+    model = SymbolFanoutModel(universe_model=FakeUniverseModel(), model=child, symbol_field="ticker")
+    first = DateContext(date="2025-01-02")
+    second = DateContext(date="2025-01-03")
+
+    model.__deps__(first)
+    model.__deps__(second)
+
+    first_payload = model(first).value
+    second_payload = model(second).value
+
+    assert [output["context"]["date"] for output in first_payload["outputs"]] == ["2025-01-02", "2025-01-02"]
+    assert [output["context"]["date"] for output in second_payload["outputs"]] == ["2025-01-03", "2025-01-03"]
