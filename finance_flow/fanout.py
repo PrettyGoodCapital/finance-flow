@@ -16,6 +16,7 @@ class SymbolFanoutModel(CallableModel):
     date_field: str = "date"
     context_values: Dict[str, Any] = Field(default_factory=dict)
     max_symbols: Optional[int] = Field(default=None, ge=1)
+    include_outputs: bool = True
     explain: bool = False
 
     _contexts_by_parent: Dict[str, List[ContextType]] = PrivateAttr(default_factory=dict)
@@ -86,8 +87,17 @@ class SymbolFanoutModel(CallableModel):
                 }
             )
         outputs = []
+        status_counts: Dict[str, int] = {}
         for child_context in contexts:
             result = self.model(context=child_context)
             value = result.value if isinstance(result, GenericResult) else result.model_dump(mode="json")
-            outputs.append({"context": child_context.model_dump(mode="json"), "value": value})
-        return GenericResult(value={"symbols": len(contexts), "outputs": outputs})
+            if isinstance(value, dict):
+                status = value.get("status")
+                if status:
+                    status_counts[str(status)] = status_counts.get(str(status), 0) + 1
+            if self.include_outputs:
+                outputs.append({"context": child_context.model_dump(mode="json"), "value": value})
+        payload = {"symbols": len(contexts), "status_counts": status_counts}
+        if self.include_outputs:
+            payload["outputs"] = outputs
+        return GenericResult(value=payload)

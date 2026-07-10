@@ -40,7 +40,7 @@ class FakeChildModel(CallableModel):
     @Flow.call
     def __call__(self, context: ChildContext) -> GenericResult:
         self.calls.append(context)
-        return GenericResult(value={"ticker": context.ticker, "date": context.date.isoformat()})
+        return GenericResult(value={"ticker": context.ticker, "date": context.date.isoformat(), "status": "written"})
 
 
 def test_symbol_fanout_exposes_universe_and_child_deps():
@@ -71,6 +71,17 @@ def test_symbol_fanout_calls_child_model_for_each_symbol():
 
     assert payload["symbols"] == 2
     assert [output["context"]["ticker"] for output in payload["outputs"]] == ["AAPL", "MSFT"]
+    assert payload["status_counts"] == {"written": 2}
+    assert [call.ticker for call in child.calls] == ["AAPL", "MSFT"]
+
+
+def test_symbol_fanout_can_omit_child_outputs_from_result():
+    child = FakeChildModel()
+    model = SymbolFanoutModel(universe_model=FakeUniverseModel(), model=child, symbol_field="ticker", include_outputs=False)
+
+    payload = model(DateContext(date="2025-01-02")).value
+
+    assert payload == {"symbols": 2, "status_counts": {"written": 2}}
     assert [call.ticker for call in child.calls] == ["AAPL", "MSFT"]
 
 
