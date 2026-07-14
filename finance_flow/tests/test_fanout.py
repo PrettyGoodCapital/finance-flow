@@ -1,4 +1,4 @@
-from typing import Type
+from typing import Any, Type
 
 from ccflow import CallableModel, ContextType, DateContext, Flow, GenericResult, ResultType
 from finance_etl import SymbolUniverseResult
@@ -28,6 +28,7 @@ class FakeUniverseModel(CallableModel):
 
 class FakeChildModel(CallableModel):
     calls: list[ChildContext] = Field(default_factory=list)
+    output: Any = None
 
     @property
     def context_type(self) -> Type[ContextType]:
@@ -41,6 +42,22 @@ class FakeChildModel(CallableModel):
     def __call__(self, context: ChildContext) -> GenericResult:
         self.calls.append(context)
         return GenericResult(value={"ticker": context.ticker, "date": context.date.isoformat(), "status": "written"})
+
+    def output_key(self, context: ChildContext) -> str:
+        return f"daily/{context.date.isoformat()}/{context.ticker}.json"
+
+
+class FakeOutput:
+    keys: set[str]
+    prefixes: list[str]
+
+    def __init__(self, keys):
+        self.keys = set(keys)
+        self.prefixes = []
+
+    def list_keys(self, prefix=""):
+        self.prefixes.append(prefix)
+        return sorted(key for key in self.keys if key.startswith(prefix))
 
 
 def test_symbol_fanout_exposes_universe_and_child_deps():
@@ -99,3 +116,21 @@ def test_symbol_fanout_keeps_deps_contexts_per_parent_context():
 
     assert [output["context"]["date"] for output in first_payload["outputs"]] == ["2025-01-02", "2025-01-02"]
     assert [output["context"]["date"] for output in second_payload["outputs"]] == ["2025-01-03", "2025-01-03"]
+
+
+def test_symbol_fanout_bulk_inventories_and_schedules_only_missing_outputs():
+    output = FakeOutput({"daily/2025-01-02/AAPL.json"})
+    child = FakeChildModel()
+    child.output = output
+    model = SymbolFanoutModel(universe_model=FakeUniverseModel(), model=child, symbol_field="ticker", skip_existing=True)
+    context = DateContext(date="2025-01-02")
+
+    deps = model.__deps__(context)
+    payload = model(context).value
+
+    assert output.prefixes == ["daily/2025-01-02"]
+    assert [step.ticker for step in deps[1][1]] == ["MSFT"]
+    assert payload["symbols"] == 2
+    assert payload["missing"] == 1
+    assert payload["existing"] == 1
+    assert [call.ticker for call in child.calls] == ["MSFT"]
