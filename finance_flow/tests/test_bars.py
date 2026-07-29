@@ -1,5 +1,5 @@
 import json
-from typing import Type
+from typing import ClassVar
 
 import pyarrow.parquet as pq
 import pytest
@@ -8,7 +8,7 @@ from ccflow_etl import LocalFileOutput, NoOpArtifactStore
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 
-from finance_flow import *  # noqa
+from finance_flow import *
 from finance_flow import (
     DailyBar,
     MassiveDailyBarsArtifactContext,
@@ -25,14 +25,14 @@ class RawDailyAggregateContext(DateContext):
 
 class FakeRawDailyAggregateModel(CallableModel):
     explain: bool = False
-    calls: list[RawDailyAggregateContext] = []
+    calls: ClassVar[list[RawDailyAggregateContext]] = []
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return RawDailyAggregateContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call

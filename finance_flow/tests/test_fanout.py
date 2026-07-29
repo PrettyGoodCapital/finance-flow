@@ -1,4 +1,4 @@
-from typing import Any, Type
+from typing import Any
 
 from ccflow import CallableModel, ContextType, DateContext, Flow, GenericResult, ResultType
 from finance_etl import SymbolUniverseResult
@@ -14,11 +14,11 @@ class ChildContext(DateContext):
 
 class FakeUniverseModel(CallableModel):
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return DateContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
@@ -31,11 +31,11 @@ class FakeChildModel(CallableModel):
     output: Any = None
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return ChildContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call

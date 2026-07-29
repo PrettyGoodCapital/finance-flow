@@ -1,7 +1,7 @@
 import json
 import posixpath
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any
 
 from ccflow import CallableModel, ContextType, Flow, GenericResult, ResultType
 from finance_etl import SymbolUniverseResult
@@ -15,24 +15,24 @@ class SymbolFanoutModel(CallableModel):
     model: CallableModel
     symbol_field: str = "symbol"
     date_field: str = "date"
-    context_values: Dict[str, Any] = Field(default_factory=dict)
-    max_symbols: Optional[int] = Field(default=None, ge=1)
+    context_values: dict[str, Any] = Field(default_factory=dict)
+    max_symbols: int | None = Field(default=None, ge=1)
     include_outputs: bool = True
     skip_existing: bool = False
     explain: bool = False
 
-    _contexts_by_parent: Dict[str, List[ContextType]] = PrivateAttr(default_factory=dict)
-    _inventory_by_parent: Dict[str, Dict[str, int]] = PrivateAttr(default_factory=dict)
+    _contexts_by_parent: dict[str, list[ContextType]] = PrivateAttr(default_factory=dict)
+    _inventory_by_parent: dict[str, dict[str, int]] = PrivateAttr(default_factory=dict)
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return self.universe_model.context_type
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
-    def _symbols(self, context: ContextType) -> List[str]:
+    def _symbols(self, context: ContextType) -> list[str]:
         result = self.universe_model(context=context)
         value = result.value if isinstance(result, GenericResult) else result
         if isinstance(value, SymbolUniverseResult):
@@ -44,14 +44,14 @@ class SymbolFanoutModel(CallableModel):
         symbols = sorted({str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()})
         return symbols[: self.max_symbols] if self.max_symbols is not None else symbols
 
-    def _context_date(self, context: ContextType) -> Optional[date]:
+    def _context_date(self, context: ContextType) -> date | None:
         for field in ("date", "as_of_date", "session_date"):
             value = getattr(context, field, None)
             if value is not None:
                 return value
         return None
 
-    def _child_contexts(self, context: ContextType) -> List[ContextType]:
+    def _child_contexts(self, context: ContextType) -> list[ContextType]:
         base = context.model_dump(mode="python")
         base.pop("type_", None)
         context_date = self._context_date(context)
@@ -66,7 +66,7 @@ class SymbolFanoutModel(CallableModel):
     def _context_key(self, context: ContextType) -> str:
         return json.dumps(context.model_dump(mode="json"), sort_keys=True)
 
-    def _missing_contexts(self, contexts: List[ContextType]) -> List[ContextType]:
+    def _missing_contexts(self, contexts: list[ContextType]) -> list[ContextType]:
         if not self.skip_existing or self.explain:
             return contexts
         output = getattr(self.model, "output", None)
@@ -81,7 +81,7 @@ class SymbolFanoutModel(CallableModel):
         return [context for context, key in zip(contexts, keys) if key not in existing]
 
     @Flow.deps
-    def __deps__(self, context: ContextType) -> List[Tuple[CallableModel, List[ContextType]]]:
+    def __deps__(self, context: ContextType) -> list[tuple[CallableModel, list[ContextType]]]:
         context_key = self._context_key(context)
         planned_contexts = self._child_contexts(context)
         self._contexts_by_parent[context_key] = self._missing_contexts(planned_contexts)
@@ -114,7 +114,7 @@ class SymbolFanoutModel(CallableModel):
                 }
             )
         outputs = []
-        status_counts: Dict[str, int] = {}
+        status_counts: dict[str, int] = {}
         for child_context in contexts:
             result = self.model(context=child_context)
             value = result.value if isinstance(result, GenericResult) else result.model_dump(mode="json")

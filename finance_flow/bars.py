@@ -1,6 +1,6 @@
 import json
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any
 
 from ccflow import CallableModel, ContextBase, ContextType, DateContext, Flow, GenericResult, ResultType
 from ccflow_etl import ArtifactReadContext, ArtifactReadModel, ArtifactWriteContext, ArtifactWriteModel, PayloadCodec
@@ -24,8 +24,8 @@ class DailyBar(BaseModel):
     low: float
     close: float
     volume: int
-    vwap: Optional[float] = None
-    transactions: Optional[int] = None
+    vwap: float | None = None
+    transactions: int | None = None
 
     @field_serializer("date")
     def serialize_date(self, value: date) -> str:
@@ -33,18 +33,18 @@ class DailyBar(BaseModel):
 
 
 class MassiveDailyBarsNormalizeContext(ContextBase):
-    payload: Union[Dict[str, Any], List[Dict[str, Any]]]
+    payload: dict[str, Any] | list[dict[str, Any]]
     ticker: str
     session_date: date
 
 
 class MassiveDailyBarsNormalizeModel(CallableModel):
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return MassiveDailyBarsNormalizeContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
@@ -59,7 +59,7 @@ class MassiveDailyBarsArtifactContext(DateContext):
 class MassiveDailyBarsArtifactModel(CallableModel):
     input_store: Any
     output: Any
-    raw_model: Optional[CallableModel] = None
+    raw_model: CallableModel | None = None
     explain: bool = False
     input_key_template: str = "massive/stocks/rest/daily-aggs/json/{date}/{ticker}.json"
     output_key_prefix: str = "massive/stocks/bars/daily"
@@ -71,11 +71,11 @@ class MassiveDailyBarsArtifactModel(CallableModel):
     return_type: str = "parquet"
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return MassiveDailyBarsArtifactContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     def input_key(self, context: MassiveDailyBarsArtifactContext) -> str:
@@ -85,7 +85,7 @@ class MassiveDailyBarsArtifactModel(CallableModel):
         suffix = PayloadCodec(format=self.return_type).suffix or ".bin"
         return f"{self.output_key_prefix.strip('/')}/{self.return_type}/{_date_value(context.date)}/{context.ticker}{suffix}"
 
-    def dataset_metadata(self) -> Dict[str, Any]:
+    def dataset_metadata(self) -> dict[str, Any]:
         return {
             "name": self.dataset_name,
             "provider": self.provider_name,
@@ -96,14 +96,14 @@ class MassiveDailyBarsArtifactModel(CallableModel):
             "media_types": [PayloadCodec(format=self.return_type).media_type],
         }
 
-    def _raw_context(self, context: MassiveDailyBarsArtifactContext) -> Optional[ContextType]:
+    def _raw_context(self, context: MassiveDailyBarsArtifactContext) -> ContextType | None:
         if self.raw_model is None:
             return None
         values = context.model_dump(mode="python")
         values.pop("type_", None)
         return self.raw_model.context_type.model_validate(values)
 
-    def _raw_plan(self, context: MassiveDailyBarsArtifactContext) -> Optional[Dict[str, Any]]:
+    def _raw_plan(self, context: MassiveDailyBarsArtifactContext) -> dict[str, Any] | None:
         raw_context = self._raw_context(context)
         if self.raw_model is None or raw_context is None:
             return None
@@ -114,7 +114,7 @@ class MassiveDailyBarsArtifactModel(CallableModel):
         value = result.value if isinstance(result, GenericResult) else result
         return value if isinstance(value, dict) else value.model_dump(mode="json")
 
-    def _metadata(self, context: MassiveDailyBarsArtifactContext, row_count: Optional[int] = None) -> Dict[str, Any]:
+    def _metadata(self, context: MassiveDailyBarsArtifactContext, row_count: int | None = None) -> dict[str, Any]:
         metadata = {
             "date": _date_value(context.date),
             "ticker": context.ticker,
@@ -157,7 +157,7 @@ class MassiveDailyBarsArtifactModel(CallableModel):
             )
         )
 
-    def _write_output(self, context: MassiveDailyBarsArtifactContext, rows: List[Dict[str, Any]]) -> Any:
+    def _write_output(self, context: MassiveDailyBarsArtifactContext, rows: list[dict[str, Any]]) -> Any:
         codec = PayloadCodec(format=self.return_type)
         return ArtifactWriteModel(store=self.output)(
             ArtifactWriteContext(
@@ -171,11 +171,11 @@ class MassiveDailyBarsArtifactModel(CallableModel):
             )
         )
 
-    def _read_payload(self, context: MassiveDailyBarsArtifactContext) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    def _read_payload(self, context: MassiveDailyBarsArtifactContext) -> tuple[dict[str, Any], dict[str, Any]]:
         read_result = ArtifactReadModel(store=self.input_store)(ArtifactReadContext(key=self.input_key(context)))
         return json.loads(read_result.payload), {"key": read_result.key, "uri": read_result.uri, "status": read_result.status}
 
-    def _plan(self, context: MassiveDailyBarsArtifactContext) -> Dict[str, Any]:
+    def _plan(self, context: MassiveDailyBarsArtifactContext) -> dict[str, Any]:
         input_key = self.input_key(context)
         output_key = self.output_key(context)
         return {
@@ -197,7 +197,7 @@ class MassiveDailyBarsArtifactModel(CallableModel):
         }
 
     @Flow.deps
-    def __deps__(self, context: MassiveDailyBarsArtifactContext) -> List[Tuple[CallableModel, List[ContextType]]]:
+    def __deps__(self, context: MassiveDailyBarsArtifactContext) -> list[tuple[CallableModel, list[ContextType]]]:
         raw_context = self._raw_context(context)
         return [] if self.raw_model is None or raw_context is None else [(self.raw_model, [raw_context])]
 
@@ -234,45 +234,45 @@ class MassiveDailyBarsArtifactModel(CallableModel):
         )
 
 
-def _items(payload: Any) -> List[Dict[str, Any]]:
+def _items(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         value = payload.get("results", payload.get("rows", []))
         return list(value or [])
     return list(payload or [])
 
 
-def _value(row: Dict[str, Any], *names: str) -> Any:
+def _value(row: dict[str, Any], *names: str) -> Any:
     for name in names:
         if name in row and row[name] is not None:
             return row[name]
     return None
 
 
-def _float(row: Dict[str, Any], *names: str) -> float:
+def _float(row: dict[str, Any], *names: str) -> float:
     value = _value(row, *names)
     if value is None:
         raise ValueError(f"Missing numeric field; expected one of {names}.")
     return float(value)
 
 
-def _int(row: Dict[str, Any], *names: str) -> int:
+def _int(row: dict[str, Any], *names: str) -> int:
     value = _value(row, *names)
     if value is None:
         raise ValueError(f"Missing integer field; expected one of {names}.")
     return int(value)
 
 
-def _optional_float(row: Dict[str, Any], *names: str) -> Optional[float]:
+def _optional_float(row: dict[str, Any], *names: str) -> float | None:
     value = _value(row, *names)
     return None if value is None else float(value)
 
 
-def _optional_int(row: Dict[str, Any], *names: str) -> Optional[int]:
+def _optional_int(row: dict[str, Any], *names: str) -> int | None:
     value = _value(row, *names)
     return None if value is None else int(value)
 
 
-def _date_value(value: Union[str, date]) -> str:
+def _date_value(value: str | date) -> str:
     return value.isoformat() if isinstance(value, date) else str(value)
 
 
@@ -297,7 +297,7 @@ def _validate_payload_status(payload: Any) -> None:
         raise ValueError(f"Massive response status is not OK: {payload['status']!r}.")
 
 
-def normalize_massive_daily_bars(payload: Union[Dict[str, Any], List[Dict[str, Any]]], ticker: str, session_date: Union[str, date]) -> List[DailyBar]:
+def normalize_massive_daily_bars(payload: dict[str, Any] | list[dict[str, Any]], ticker: str, session_date: str | date) -> list[DailyBar]:
     business_date = date.fromisoformat(session_date) if isinstance(session_date, str) else session_date
     expected_ticker = ticker.strip().upper()
     seen = set()

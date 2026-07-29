@@ -1,5 +1,4 @@
 from datetime import date
-from typing import Dict, List, Optional, Type
 
 from ccflow import CallableModel, ContextBase, ContextType, Flow, GenericResult, ResultType
 from finance_datagen import generate_prices, generate_signal
@@ -20,26 +19,26 @@ from finance_etl import (
 from pydantic import Field, model_validator
 
 __all__ = (
-    "BuildUniverseContext",
-    "BuildUniverseModel",
-    "CalculateSignalsContext",
-    "CalculateSignalsModel",
-    "OptimizePortfolioContext",
-    "OptimizePortfolioModel",
-    "ConstructTargetPositionsContext",
-    "ConstructTargetPositionsModel",
     "BacktestPortfolioContext",
     "BacktestPortfolioModel",
-    "EvaluateRealPortfolioContext",
-    "EvaluateRealPortfolioModel",
     "BuildAlphaReportContext",
     "BuildAlphaReportModel",
     "BuildRiskReportContext",
     "BuildRiskReportModel",
+    "BuildUniverseContext",
+    "BuildUniverseModel",
+    "CalculateSignalsContext",
+    "CalculateSignalsModel",
+    "ConstructTargetPositionsContext",
+    "ConstructTargetPositionsModel",
+    "EvaluateRealPortfolioContext",
+    "EvaluateRealPortfolioModel",
+    "OptimizePortfolioContext",
+    "OptimizePortfolioModel",
 )
 
 
-def _normalize_weights(values: List[float]) -> List[float]:
+def _normalize_weights(values: list[float]) -> list[float]:
     gross = sum(abs(value) for value in values)
     if gross == 0:
         raise ValueError("Cannot normalize zero signal vector.")
@@ -54,13 +53,13 @@ def _coerce_date_only_context(cls, value, handler):
     return handler(value)
 
 
-def _synthetic_signals(as_of_date: date, n_assets: int, symbols: List[str], ic: float, seed: Optional[int]) -> List[SignalRecord]:
+def _synthetic_signals(as_of_date: date, n_assets: int, symbols: list[str], ic: float, seed: int | None) -> list[SignalRecord]:
     symbols = symbols or [f"A{i:04d}" for i in range(n_assets)]
     frame = generate_signal(n_dates=1, n_assets=len(symbols), symbols=symbols, start=as_of_date, ic=ic, seed=seed)
     return [
         SignalRecord(
             as_of_date=as_of_date,
-            instrument_id=f"GEN:{str(row['symbol'])}",
+            instrument_id=f"GEN:{row['symbol']!s}",
             value=float(row["signal"]),
         )
         for row in frame.iter_rows(named=True)
@@ -69,11 +68,11 @@ def _synthetic_signals(as_of_date: date, n_assets: int, symbols: List[str], ic: 
 
 class BuildUniverseContext(ContextBase):
     as_of_date: date
-    symbols: List[str] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
     exchange: str = "XNYS"
-    market_partition: Optional[MarketPartitionContext] = None
+    market_partition: MarketPartitionContext | None = None
     n_assets: int = 10
-    seed: Optional[int] = None
+    seed: int | None = None
 
     @model_validator(mode="wrap")
     @classmethod
@@ -94,17 +93,17 @@ class BuildUniverseModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return BuildUniverseContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
     def __call__(self, context: BuildUniverseContext) -> GenericResult:
         symbols = context.symbols or [f"A{i:04d}" for i in range(context.n_assets)]
-        members: List[UniverseMember] = []
+        members: list[UniverseMember] = []
         for index, symbol in enumerate(symbols):
             frame = generate_prices(symbol=symbol, n_steps=1, seed=(None if context.seed is None else context.seed + index))
             close = float(frame["price"][-1])
@@ -133,12 +132,12 @@ class BuildUniverseModel(CallableModel):
 
 class CalculateSignalsContext(ContextBase):
     as_of_date: date
-    universe: List[UniverseMember] = Field(default_factory=list)
-    symbols: List[str] = Field(default_factory=list)
-    strategy_partition: Optional[StrategyDatePartitionContext] = None
+    universe: list[UniverseMember] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
+    strategy_partition: StrategyDatePartitionContext | None = None
     n_assets: int = 10
     ic: float = 0.05
-    seed: Optional[int] = None
+    seed: int | None = None
 
     @model_validator(mode="wrap")
     @classmethod
@@ -158,11 +157,11 @@ class CalculateSignalsModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return CalculateSignalsContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
@@ -184,7 +183,7 @@ class CalculateSignalsModel(CallableModel):
             seed=context.seed,
         )
 
-        signals: List[SignalRecord] = []
+        signals: list[SignalRecord] = []
         for row in frame.iter_rows(named=True):
             symbol = str(row["symbol"])
             signals.append(
@@ -213,15 +212,15 @@ class CalculateSignalsModel(CallableModel):
 
 class OptimizePortfolioContext(ContextBase):
     as_of_date: date
-    signals: List[SignalRecord] = Field(default_factory=list)
-    symbols: List[str] = Field(default_factory=list)
-    strategy_partition: Optional[StrategyDatePartitionContext] = None
+    signals: list[SignalRecord] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
+    strategy_partition: StrategyDatePartitionContext | None = None
     n_assets: int = 10
     ic: float = 0.05
-    seed: Optional[int] = None
+    seed: int | None = None
     long_only: bool = False
     max_abs_weight: float = 1.0
-    top_k: Optional[int] = None
+    top_k: int | None = None
 
     @model_validator(mode="wrap")
     @classmethod
@@ -241,11 +240,11 @@ class OptimizePortfolioModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return OptimizePortfolioContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
@@ -304,17 +303,17 @@ class OptimizePortfolioModel(CallableModel):
 
 class ConstructTargetPositionsContext(ContextBase):
     as_of_date: date
-    allocations: List[OptimizerAllocation] = Field(default_factory=list)
-    symbols: List[str] = Field(default_factory=list)
-    portfolio_partition: Optional[PortfolioDatePartitionContext] = None
+    allocations: list[OptimizerAllocation] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
+    portfolio_partition: PortfolioDatePartitionContext | None = None
     n_assets: int = 10
     ic: float = 0.05
-    seed: Optional[int] = None
+    seed: int | None = None
     long_only: bool = False
     max_abs_weight: float = 1.0
-    top_k: Optional[int] = None
+    top_k: int | None = None
     portfolio_notional: float = 1_000_000.0
-    prices: Dict[str, float] = Field(default_factory=dict)
+    prices: dict[str, float] = Field(default_factory=dict)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -334,11 +333,11 @@ class ConstructTargetPositionsModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return ConstructTargetPositionsContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
@@ -358,7 +357,7 @@ class ConstructTargetPositionsModel(CallableModel):
                 )
             ).value
 
-        targets: List[TargetPositionRecord] = []
+        targets: list[TargetPositionRecord] = []
         for allocation in allocations:
             target_notional = allocation.weight * context.portfolio_notional
             price = context.prices.get(allocation.instrument_id)
@@ -388,14 +387,14 @@ class ConstructTargetPositionsModel(CallableModel):
 
 class BacktestPortfolioContext(ContextBase):
     as_of_date: date
-    strategy_partition: Optional[StrategyDatePartitionContext] = None
-    targets: List[TargetPositionRecord] = Field(default_factory=list)
-    symbols: List[str] = Field(default_factory=list)
+    strategy_partition: StrategyDatePartitionContext | None = None
+    targets: list[TargetPositionRecord] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
     n_assets: int = 10
     ic: float = 0.05
-    seed: Optional[int] = None
+    seed: int | None = None
     portfolio_notional: float = 1_000_000.0
-    prices: Dict[str, float] = Field(default_factory=dict)
+    prices: dict[str, float] = Field(default_factory=dict)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -408,11 +407,11 @@ class BacktestPortfolioModel(CallableModel):
     strategy_id: str = "default-strategy"
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return BacktestPortfolioContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
@@ -458,9 +457,9 @@ class BacktestPortfolioModel(CallableModel):
 
 class EvaluateRealPortfolioContext(ContextBase):
     as_of_date: date
-    portfolio_partition: Optional[PortfolioDatePartitionContext] = None
-    expected_targets: List[TargetPositionRecord] = Field(default_factory=list)
-    realized_positions: List[PortfolioSnapshot] = Field(default_factory=list)
+    portfolio_partition: PortfolioDatePartitionContext | None = None
+    expected_targets: list[TargetPositionRecord] = Field(default_factory=list)
+    realized_positions: list[PortfolioSnapshot] = Field(default_factory=list)
     tolerance_bps: float = 25.0
 
     @model_validator(mode="wrap")
@@ -473,11 +472,11 @@ class EvaluateRealPortfolioModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return EvaluateRealPortfolioContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
@@ -513,13 +512,13 @@ class EvaluateRealPortfolioModel(CallableModel):
 
 class BuildAlphaReportContext(ContextBase):
     as_of_date: date
-    report_partition: Optional[ReportDatePartitionContext] = None
-    strategy_partition: Optional[StrategyDatePartitionContext] = None
-    signals: List[SignalRecord] = Field(default_factory=list)
-    symbols: List[str] = Field(default_factory=list)
+    report_partition: ReportDatePartitionContext | None = None
+    strategy_partition: StrategyDatePartitionContext | None = None
+    signals: list[SignalRecord] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
     n_assets: int = 10
     ic: float = 0.05
-    seed: Optional[int] = None
+    seed: int | None = None
 
     @model_validator(mode="wrap")
     @classmethod
@@ -531,11 +530,11 @@ class BuildAlphaReportModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return BuildAlphaReportContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
@@ -571,15 +570,15 @@ class BuildAlphaReportModel(CallableModel):
 
 class BuildRiskReportContext(ContextBase):
     as_of_date: date
-    report_partition: Optional[ReportDatePartitionContext] = None
-    portfolio_partition: Optional[PortfolioDatePartitionContext] = None
-    targets: List[TargetPositionRecord] = Field(default_factory=list)
-    symbols: List[str] = Field(default_factory=list)
+    report_partition: ReportDatePartitionContext | None = None
+    portfolio_partition: PortfolioDatePartitionContext | None = None
+    targets: list[TargetPositionRecord] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
     n_assets: int = 10
     ic: float = 0.05
-    seed: Optional[int] = None
+    seed: int | None = None
     portfolio_notional: float = 1_000_000.0
-    prices: Dict[str, float] = Field(default_factory=dict)
+    prices: dict[str, float] = Field(default_factory=dict)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -591,11 +590,11 @@ class BuildRiskReportModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> Type[ContextType]:
+    def context_type(self) -> type[ContextType]:
         return BuildRiskReportContext
 
     @property
-    def result_type(self) -> Type[ResultType]:
+    def result_type(self) -> type[ResultType]:
         return GenericResult
 
     @Flow.call
