@@ -15,7 +15,7 @@ from finance_flow import (
 )
 
 CSV_PAYLOAD = b"""ticker,volume,open,close,high,low,window_start,transactions
-AAPL,58414500,184.22,184.95,185.88,183.43,1704240000000000000,521321
+AAPL,58414500.125,184.22,184.95,185.88,183.43,1704240000000000000,521321
 MSFT,23000000,370.0,374.5,375.0,369.5,1704240000000000000,310000
 """
 
@@ -44,7 +44,7 @@ def test_massive_daily_bars_flat_file_transform_streams_csv_gzip_to_parquet(tmp_
             "high": 185.88,
             "low": 183.43,
             "close": 184.95,
-            "volume": 58414500,
+            "volume": 58414500.125,
             "vwap": None,
             "transactions": 521321,
         },
@@ -66,12 +66,7 @@ def test_massive_daily_bars_flat_file_transform_streams_csv_gzip_to_parquet(tmp_
 def test_massive_daily_bars_flat_file_transform_rejects_invalid_ohlc_atomically(tmp_path):
     source_path = tmp_path / "invalid.csv.gz"
     output_path = tmp_path / "daily.parquet"
-    source_path.write_bytes(
-        compress(
-            b"ticker,volume,open,close,high,low,window_start,transactions\n"
-            b"AAPL,100,10,11,9,8,1704240000000000000,5\n"
-        )
-    )
+    source_path.write_bytes(compress(b"ticker,volume,open,close,high,low,window_start,transactions\nAAPL,100,10,11,9,8,1704240000000000000,5\n"))
 
     with pytest.raises(ValueError, match="OHLC bounds"):
         MassiveDailyBarsFlatFileTransformModel()(

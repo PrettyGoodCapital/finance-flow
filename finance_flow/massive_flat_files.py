@@ -79,7 +79,7 @@ class MassiveDailyBarsFlatFileTransformModel(CallableModel):
                 ("high", pa.float64()),
                 ("low", pa.float64()),
                 ("close", pa.float64()),
-                ("volume", pa.int64()),
+                ("volume", pa.float64()),
                 ("vwap", pa.float64()),
                 ("transactions", pa.int64()),
             ],
@@ -93,7 +93,7 @@ class MassiveDailyBarsFlatFileTransformModel(CallableModel):
         )
         column_types = {
             "ticker": pa.string(),
-            "volume": pa.int64(),
+            "volume": pa.float64(),
             "open": pa.float64(),
             "close": pa.float64(),
             "high": pa.float64(),
