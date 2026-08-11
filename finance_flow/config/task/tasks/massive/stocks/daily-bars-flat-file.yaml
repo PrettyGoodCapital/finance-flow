@@ -1,0 +1,13 @@
+# @package task
+
+_target_: finance_flow.MassiveDailyBarsFlatFileModel
+materializer:
+  _target_: ccflow_etl.ArtifactMaterializeModel
+  store: ${output}
+transform:
+  _target_: finance_flow.MassiveDailyBarsFlatFileTransformModel
+local_writer:
+  _target_: ccflow_etl.ArtifactWriteFileModel
+  store: ${output}
+backup_writer: null
+explain: true

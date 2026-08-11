@@ -33,6 +33,7 @@ dependencies = [
     "ccflow-etl",
     "finance-datagen",
     "finance-etl",
+    "pyarrow",
     "pydantic",
 ]
 
