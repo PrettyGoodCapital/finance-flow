@@ -119,11 +119,16 @@ class MassiveDailyBarsFlatFileTransformModel(CallableModel):
                 if any(bool(pc.any(pc.is_null(column)).as_py()) for column in required):
                     raise ValueError("Massive daily aggregate contains null required values.")
 
-                ticker = pc.ascii_upper(pc.utf8_trim_whitespace(batch.column(batch.schema.get_field_index("ticker"))))
+                ticker = pc.utf8_trim_whitespace(batch.column(batch.schema.get_field_index("ticker")))
                 tickers = ticker.to_pylist()
                 duplicates = seen_tickers.intersection(tickers)
-                if len(tickers) != len(set(tickers)) or duplicates:
-                    raise ValueError(f"Duplicate Massive daily bars for {sorted(duplicates or set(tickers))[:1]}.")
+                batch_tickers: set[str] = set()
+                for value in tickers:
+                    if value in batch_tickers:
+                        duplicates.add(value)
+                    batch_tickers.add(value)
+                if duplicates:
+                    raise ValueError(f"Duplicate Massive daily bars for {sorted(duplicates)[:1]}.")
                 seen_tickers.update(tickers)
 
                 volume = batch.column(batch.schema.get_field_index("volume"))

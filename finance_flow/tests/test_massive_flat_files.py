@@ -15,8 +15,8 @@ from finance_flow import (
 )
 
 CSV_PAYLOAD = b"""ticker,volume,open,close,high,low,window_start,transactions
-AAPL,58414500.125,184.22,184.95,185.88,183.43,1704240000000000000,521321
-MSFT,23000000,370.0,374.5,375.0,369.5,1704240000000000000,310000
+BCPC,58414500.125,184.22,184.95,185.88,183.43,1704240000000000000,521321
+BCpC,23000000,370.0,374.5,375.0,369.5,1704240000000000000,310000
 """
 
 
@@ -38,7 +38,7 @@ def test_massive_daily_bars_flat_file_transform_streams_csv_gzip_to_parquet(tmp_
     assert result.row_count == 2
     assert pq.read_table(output_path).to_pylist() == [
         {
-            "ticker": "AAPL",
+            "ticker": "BCPC",
             "date": date(2024, 1, 3),
             "open": 184.22,
             "high": 185.88,
@@ -49,7 +49,7 @@ def test_massive_daily_bars_flat_file_transform_streams_csv_gzip_to_parquet(tmp_
             "transactions": 521321,
         },
         {
-            "ticker": "MSFT",
+            "ticker": "BCpC",
             "date": date(2024, 1, 3),
             "open": 370.0,
             "high": 375.0,
