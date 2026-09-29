@@ -62,11 +62,11 @@ Build market-wide daily bars from Massive day-aggregate flat files with `Massive
 Each session also gets a `{date}.metadata.json` sidecar, written through the same writers. It records:
 
 - the source object's key, URI, size, and, when the store reports them, ETag, version ID, and last-modified time;
-- the transform class, a SHA-256 fingerprint of its configuration, and the `finance-flow` and `pyarrow` versions;
+- transform provenance: for a partition transformed in the same run, `recorded` with the transform class, a SHA-256 fingerprint of its configuration, and the `finance-flow` and `pyarrow` versions; for a partition that already existed, `backfilled` with those fields left null, since what produced it is unknown;
 - the output key, size, SHA-256, and row count;
 - quality counters recomputed from the written Parquet: row and ticker counts, duplicate tickers, null required values, negative volume or transactions, OHLC violations, and zero-volume and zero-transaction rows.
 
-When a partition already exists but its sidecar does not, the model writes only the sidecar, so older sessions can be backfilled without re-transforming.
+When a partition already exists but its sidecar does not, the model writes only the sidecar, so older sessions can be backfilled without re-transforming. Set `overwrite_sidecar=true` to regenerate sidecars without rewriting partitions. If the workspace copy had to be rebuilt while the published partition already exists, the model skips the sidecar rather than describe bytes that were never published.
 
 ## Documentation
 

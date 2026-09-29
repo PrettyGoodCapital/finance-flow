@@ -215,6 +215,7 @@ def test_massive_daily_bars_flat_file_pipeline_writes_lineage_and_quality_sideca
         "zero_volume_count": 0,
         "zero_transactions_count": 0,
     }
+    assert sidecar["transform"]["provenance"] == "recorded"
     assert sidecar["transform"]["model"] == "finance_flow.massive_flat_files.MassiveDailyBarsFlatFileTransformModel"
     assert len(sidecar["transform"]["config_fingerprint"]) == 64
     assert set(sidecar["transform"]["versions"]) == {"finance-flow", "pyarrow"}
@@ -237,7 +238,43 @@ def test_massive_daily_bars_flat_file_pipeline_adds_missing_sidecar_to_existing_
     assert result.sidecar_local_write.status == "written"
     assert result.sidecar_backup_write.status == "written"
     assert result.status == "written"
-    assert json.loads(backup_store.file_path(sidecar_key).read_text())["quality"]["row_count"] == 2
+    sidecar = json.loads(backup_store.file_path(sidecar_key).read_text())
+    assert sidecar["quality"]["row_count"] == 2
+    assert sidecar["transform"] == {"provenance": "backfilled", "model": None, "config_fingerprint": None, "versions": None}
+
+
+def test_massive_daily_bars_flat_file_pipeline_skips_sidecar_when_rebuilt_file_was_not_published(tmp_path):
+    model, local_store, backup_store = _pipeline(tmp_path)
+    context = MassiveDailyBarsFlatFileContext(date="2024-01-03")
+    sidecar_key = model.sidecar_key(context)
+    model(context)
+    for path in (model.output_path(context), model.sidecar_path(context), local_store.file_path(sidecar_key), backup_store.file_path(sidecar_key)):
+        path.unlink()
+
+    result = model(context)
+
+    assert result.transform.status == "transformed"
+    assert result.local_write.status == "exists"
+    assert result.sidecar_local_write is None
+    assert result.sidecar_backup_write is None
+    assert not local_store.file_path(sidecar_key).exists()
+    assert not backup_store.file_path(sidecar_key).exists()
+
+
+def test_massive_daily_bars_flat_file_pipeline_regenerates_sidecars_without_touching_partitions(tmp_path):
+    model, local_store, backup_store = _pipeline(tmp_path)
+    context = MassiveDailyBarsFlatFileContext(date="2024-01-03")
+    model(context)
+    partition = local_store.file_path(model.output_key(context))
+    partition_bytes = partition.read_bytes()
+
+    result = model.model_copy(update={"overwrite_sidecar": True})(context)
+
+    assert result.local_write.status == "exists"
+    assert result.sidecar_local_write.status == "written"
+    assert result.sidecar_backup_write.status == "written"
+    assert partition.read_bytes() == partition_bytes
+    assert json.loads(backup_store.file_path(model.sidecar_key(context)).read_text())["transform"]["provenance"] == "backfilled"
 
 
 def test_massive_daily_bars_flat_file_transform_reports_zero_activity_counts(tmp_path):

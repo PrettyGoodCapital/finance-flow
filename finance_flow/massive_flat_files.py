@@ -203,7 +203,7 @@ class MassiveDailyBarsFlatFileResult(ResultBase):
     local_write: ArtifactWriteFileResult
     backup_write: ArtifactWriteFileResult | None = None
     sidecar_key: str
-    sidecar_local_write: ArtifactWriteFileResult
+    sidecar_local_write: ArtifactWriteFileResult | None = None
     sidecar_backup_write: ArtifactWriteFileResult | None = None
 
 
@@ -217,6 +217,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
     output_key_template: str = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.parquet"
     sidecar_key_template: str = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.metadata.json"
     overwrite: bool = False
+    overwrite_sidecar: bool = False
     explain: bool = False
 
     @property
@@ -261,18 +262,24 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
                 if materialization.metadata.get(name) is not None
             }
         )
-        transform_config = json.dumps(self.transform.model_dump(mode="json", exclude={"meta"}), sort_keys=True, separators=(",", ":"))
+        if transform.status == "transformed":
+            transform_config = json.dumps(self.transform.model_dump(mode="json", exclude={"meta"}), sort_keys=True, separators=(",", ":"))
+            provenance = {
+                "provenance": "recorded",
+                "model": f"{type(self.transform).__module__}.{type(self.transform).__qualname__}",
+                "config_fingerprint": sha256(transform_config.encode()).hexdigest(),
+                "versions": {"finance-flow": version("finance-flow"), "pyarrow": version("pyarrow")},
+            }
+        else:
+            # The partition existed before this run, so the code and configuration that produced it are unknown.
+            provenance = {"provenance": "backfilled", "model": None, "config_fingerprint": None, "versions": None}
         return {
             "dataset": "massive-stocks-bars-daily",
             "schema_name": "daily_bar",
             "schema_version": self.transform.schema_version,
             "date": context.date.isoformat(),
             "source": source,
-            "transform": {
-                "model": f"{type(self.transform).__module__}.{type(self.transform).__qualname__}",
-                "config_fingerprint": sha256(transform_config.encode()).hexdigest(),
-                "versions": {"finance-flow": version("finance-flow"), "pyarrow": version("pyarrow")},
-            },
+            "transform": provenance,
             "output": {"key": output_key, "size": output_path.stat().st_size, "sha256": _file_sha256(output_path), "row_count": transform.row_count},
             "quality": transform.quality,
             "produced_at": datetime.now(UTC).isoformat(),
@@ -352,27 +359,28 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
 
         sidecar_key = self.sidecar_key(context)
         sidecar_path = self.sidecar_path(context)
-        if not dry_run and (self.overwrite or transform.status == "transformed" or not sidecar_path.exists()):
-            self._write_sidecar(sidecar_path, self._sidecar(context, output_key, output_path, materialization, transform))
-        sidecar_context = {
-            "key": sidecar_key,
-            "path": sidecar_path,
-            "media_type": "application/json",
-            "dataset": "massive-stocks-bars-daily",
-            "overwrite": self.overwrite,
-            "dry_run": dry_run,
-            "metadata": {"date": context.date.isoformat(), "output_key": output_key},
-        }
-        sidecar_local_write = self.local_writer(ArtifactWriteFileContext(**sidecar_context, stage="transform"))
-        sidecar_backup_write = None
-        if self.backup_writer is not None:
-            sidecar_backup_write = self.backup_writer(ArtifactWriteFileContext(**sidecar_context, stage="load"))
+        # A freshly transformed file that was not published (the published copy already existed) may differ from it.
+        parquet_statuses = [local_write.status] + ([backup_write.status] if backup_write is not None else [])
+        unverifiable = transform.status == "transformed" and "exists" in parquet_statuses
+        sidecar_local_write = sidecar_backup_write = None
+        if not unverifiable:
+            overwrite_sidecar = self.overwrite or self.overwrite_sidecar
+            if not dry_run and (overwrite_sidecar or transform.status == "transformed" or not sidecar_path.exists()):
+                self._write_sidecar(sidecar_path, self._sidecar(context, output_key, output_path, materialization, transform))
+            sidecar_context = {
+                "key": sidecar_key,
+                "path": sidecar_path,
+                "media_type": "application/json",
+                "dataset": "massive-stocks-bars-daily",
+                "overwrite": overwrite_sidecar,
+                "dry_run": dry_run,
+                "metadata": {"date": context.date.isoformat(), "output_key": output_key},
+            }
+            sidecar_local_write = self.local_writer(ArtifactWriteFileContext(**sidecar_context, stage="transform"))
+            if self.backup_writer is not None:
+                sidecar_backup_write = self.backup_writer(ArtifactWriteFileContext(**sidecar_context, stage="load"))
 
-        statuses = [local_write.status, sidecar_local_write.status]
-        if backup_write is not None:
-            statuses.append(backup_write.status)
-        if sidecar_backup_write is not None:
-            statuses.append(sidecar_backup_write.status)
+        statuses = parquet_statuses + [write.status for write in (sidecar_local_write, sidecar_backup_write) if write is not None]
         status = "planned" if dry_run else next((value for value in statuses if value != "exists"), "exists")
         return MassiveDailyBarsFlatFileResult(
             date=context.date,
