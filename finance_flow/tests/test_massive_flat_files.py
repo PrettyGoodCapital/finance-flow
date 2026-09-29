@@ -1,5 +1,7 @@
+import json
 from datetime import date
 from gzip import compress
+from hashlib import sha256
 
 import pyarrow.parquet as pq
 import pytest
@@ -121,6 +123,8 @@ def test_massive_daily_bars_flat_file_pipeline_explain_is_io_free(tmp_path):
     assert result.transform.status == "planned"
     assert result.local_write.status == "planned"
     assert result.backup_write.status == "planned"
+    assert result.sidecar_local_write.status == "planned"
+    assert result.sidecar_backup_write.status == "planned"
     assert not list(tmp_path.rglob("*"))
 
 
@@ -151,3 +155,103 @@ hydra:
     assert isinstance(task.local_writer, ArtifactWriteFileModel)
     assert task.explain is True
     assert cfg.callable == "/task"
+
+
+class IdentityFileOutput(LocalFileOutput):
+    def read_file(self, key, path):
+        return {**super().read_file(key, path), "etag": '"raw-etag"', "version_id": "v-3", "last_modified": "2024-01-04T05:45:00+00:00"}
+
+
+def _pipeline(tmp_path, **kwargs):
+    input_store = IdentityFileOutput(path=tmp_path / "remote-raw")
+    input_store.write("massive/stocks/s3/day-aggs/2024/01/2024-01-03.csv.gz", compress(CSV_PAYLOAD))
+    local_store = LocalFileOutput(path=tmp_path / "local-datasets")
+    backup_store = LocalFileOutput(path=tmp_path / "remote-curated")
+    model = MassiveDailyBarsFlatFileModel(
+        materializer=ArtifactMaterializeModel(store=input_store),
+        transform=MassiveDailyBarsFlatFileTransformModel(batch_size=128),
+        local_writer=ArtifactWriteFileModel(store=local_store),
+        backup_writer=ArtifactWriteFileModel(store=backup_store),
+        workspace=tmp_path / "workspace",
+        **kwargs,
+    )
+    return model, local_store, backup_store
+
+
+def test_massive_daily_bars_flat_file_pipeline_writes_lineage_and_quality_sidecar(tmp_path):
+    model, local_store, backup_store = _pipeline(tmp_path)
+    sidecar_key = "massive/stocks/curated/bars/daily/v1/2024/01/2024-01-03.metadata.json"
+    output_key = "massive/stocks/curated/bars/daily/v1/2024/01/2024-01-03.parquet"
+
+    result = model(MassiveDailyBarsFlatFileContext(date="2024-01-03"))
+    sidecar = json.loads(local_store.file_path(sidecar_key).read_text())
+    published = local_store.file_path(output_key)
+
+    assert result.sidecar_key == sidecar_key
+    assert result.sidecar_local_write.status == "written"
+    assert result.sidecar_backup_write.status == "written"
+    assert backup_store.file_path(sidecar_key).read_text() == local_store.file_path(sidecar_key).read_text()
+    assert sidecar["source"] == {
+        "key": "massive/stocks/s3/day-aggs/2024/01/2024-01-03.csv.gz",
+        "uri": result.materialization.uri,
+        "size": result.materialization.size,
+        "etag": '"raw-etag"',
+        "version_id": "v-3",
+        "last_modified": "2024-01-04T05:45:00+00:00",
+    }
+    assert sidecar["output"] == {
+        "key": output_key,
+        "size": published.stat().st_size,
+        "sha256": sha256(published.read_bytes()).hexdigest(),
+        "row_count": 2,
+    }
+    assert sidecar["quality"] == {
+        "row_count": 2,
+        "ticker_count": 2,
+        "duplicate_ticker_count": 0,
+        "null_required_count": 0,
+        "negative_volume_or_transactions_count": 0,
+        "ohlc_violation_count": 0,
+        "zero_volume_count": 0,
+        "zero_transactions_count": 0,
+    }
+    assert sidecar["transform"]["model"] == "finance_flow.massive_flat_files.MassiveDailyBarsFlatFileTransformModel"
+    assert len(sidecar["transform"]["config_fingerprint"]) == 64
+    assert set(sidecar["transform"]["versions"]) == {"finance-flow", "pyarrow"}
+    assert sidecar["schema_version"] == "1"
+
+
+def test_massive_daily_bars_flat_file_pipeline_adds_missing_sidecar_to_existing_partition(tmp_path):
+    model, local_store, backup_store = _pipeline(tmp_path)
+    context = MassiveDailyBarsFlatFileContext(date="2024-01-03")
+    sidecar_key = model.sidecar_key(context)
+    model(context)
+    for path in (model.sidecar_path(context), local_store.file_path(sidecar_key), backup_store.file_path(sidecar_key)):
+        path.unlink()
+
+    result = model(context)
+
+    assert result.transform.status == "exists"
+    assert result.local_write.status == "exists"
+    assert result.backup_write.status == "exists"
+    assert result.sidecar_local_write.status == "written"
+    assert result.sidecar_backup_write.status == "written"
+    assert result.status == "written"
+    assert json.loads(backup_store.file_path(sidecar_key).read_text())["quality"]["row_count"] == 2
+
+
+def test_massive_daily_bars_flat_file_transform_reports_zero_activity_counts(tmp_path):
+    source_path = tmp_path / "zero.csv.gz"
+    source_path.write_bytes(
+        compress(
+            b"ticker,volume,open,close,high,low,window_start,transactions\nAAA,0,10,10,10,10,1704240000000000000,0\nBBB,5,10,11,12,9,1704240000000000000,2\n"
+        )
+    )
+
+    result = MassiveDailyBarsFlatFileTransformModel()(
+        MassiveDailyBarsFlatFileTransformContext(source_path=source_path, output_path=tmp_path / "zero.parquet", session_date="2024-01-03")
+    )
+
+    assert result.quality["zero_volume_count"] == 1
+    assert result.quality["zero_transactions_count"] == 1
+    assert result.quality["ohlc_violation_count"] == 0

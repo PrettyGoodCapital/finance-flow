@@ -57,6 +57,17 @@ result = MassiveDailyBarsArtifactModel(input_store=store, output=store)(
 
 The artifact task reads `massive/stocks/rest/daily-aggs/json/{date}/{ticker}.json` and writes `massive/stocks/bars/daily/parquet/{date}/{ticker}.parquet`.
 
+Build market-wide daily bars from Massive day-aggregate flat files with `MassiveDailyBarsFlatFileModel`. It materializes `massive/stocks/s3/day-aggs/{year}/{month}/{date}.csv.gz` to a local workspace, streams it through `MassiveDailyBarsFlatFileTransformModel` into one validated Parquet file per session, and writes that file through a local writer and an optional backup writer under `massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.parquet`.
+
+Each session also gets a `{date}.metadata.json` sidecar, written through the same writers. It records:
+
+- the source object's key, URI, size, and, when the store reports them, ETag, version ID, and last-modified time;
+- the transform class, a SHA-256 fingerprint of its configuration, and the `finance-flow` and `pyarrow` versions;
+- the output key, size, SHA-256, and row count;
+- quality counters recomputed from the written Parquet: row and ticker counts, duplicate tickers, null required values, negative volume or transactions, OHLC violations, and zero-volume and zero-transaction rows.
+
+When a partition already exists but its sidecar does not, the model writes only the sidecar, so older sessions can be backfilled without re-transforming.
+
 ## Documentation
 
 - [Schemas](docs/src/schemas.md)

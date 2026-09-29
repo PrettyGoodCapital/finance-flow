@@ -1,4 +1,7 @@
-from datetime import date
+import json
+from datetime import UTC, date, datetime
+from hashlib import sha256
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -12,6 +15,7 @@ from ccflow_etl import (
     ArtifactWriteFileModel,
     ArtifactWriteFileResult,
 )
+from pydantic import Field
 
 __all__ = (
     "MassiveDailyBarsFlatFileContext",
@@ -37,6 +41,7 @@ class MassiveDailyBarsFlatFileTransformResult(ResultBase):
     output_path: str
     status: str
     row_count: int | None = None
+    quality: dict[str, Any] = Field(default_factory=dict)
 
 
 class MassiveDailyBarsFlatFileTransformModel(CallableModel):
@@ -59,8 +64,13 @@ class MassiveDailyBarsFlatFileTransformModel(CallableModel):
                 source_path=str(context.source_path), output_path=str(context.output_path), status="planned"
             )
         if context.output_path.exists() and not context.overwrite:
+            quality = _parquet_quality(context.output_path)
             return MassiveDailyBarsFlatFileTransformResult(
-                source_path=str(context.source_path), output_path=str(context.output_path), status="exists"
+                source_path=str(context.source_path),
+                output_path=str(context.output_path),
+                status="exists",
+                row_count=quality["row_count"],
+                quality=quality,
             )
 
         try:
@@ -175,6 +185,7 @@ class MassiveDailyBarsFlatFileTransformModel(CallableModel):
             output_path=str(context.output_path),
             status="transformed",
             row_count=row_count,
+            quality=_parquet_quality(context.output_path),
         )
 
 
@@ -191,6 +202,9 @@ class MassiveDailyBarsFlatFileResult(ResultBase):
     transform: MassiveDailyBarsFlatFileTransformResult
     local_write: ArtifactWriteFileResult
     backup_write: ArtifactWriteFileResult | None = None
+    sidecar_key: str
+    sidecar_local_write: ArtifactWriteFileResult
+    sidecar_backup_write: ArtifactWriteFileResult | None = None
 
 
 class MassiveDailyBarsFlatFileModel(CallableModel):
@@ -201,6 +215,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
     workspace: Path = Path("data/workspace")
     input_key_template: str = "massive/stocks/s3/day-aggs/{year}/{month}/{date}.csv.gz"
     output_key_template: str = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.parquet"
+    sidecar_key_template: str = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.metadata.json"
     overwrite: bool = False
     explain: bool = False
 
@@ -223,6 +238,51 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
 
     def output_path(self, context: MassiveDailyBarsFlatFileContext) -> Path:
         return self.workspace / "curated" / self.output_key(context)
+
+    def sidecar_key(self, context: MassiveDailyBarsFlatFileContext) -> str:
+        return _format_key(self.sidecar_key_template, context.date)
+
+    def sidecar_path(self, context: MassiveDailyBarsFlatFileContext) -> Path:
+        return self.workspace / "curated" / self.sidecar_key(context)
+
+    def _sidecar(
+        self,
+        context: MassiveDailyBarsFlatFileContext,
+        output_key: str,
+        output_path: Path,
+        materialization: ArtifactMaterializeResult,
+        transform: MassiveDailyBarsFlatFileTransformResult,
+    ) -> dict[str, Any]:
+        source = {"key": materialization.key, "uri": materialization.uri, "size": materialization.size}
+        source.update(
+            {
+                name: materialization.metadata[name]
+                for name in ("bucket", "object", "etag", "version_id", "last_modified")
+                if materialization.metadata.get(name) is not None
+            }
+        )
+        transform_config = json.dumps(self.transform.model_dump(mode="json", exclude={"meta"}), sort_keys=True, separators=(",", ":"))
+        return {
+            "dataset": "massive-stocks-bars-daily",
+            "schema_name": "daily_bar",
+            "schema_version": self.transform.schema_version,
+            "date": context.date.isoformat(),
+            "source": source,
+            "transform": {
+                "model": f"{type(self.transform).__module__}.{type(self.transform).__qualname__}",
+                "config_fingerprint": sha256(transform_config.encode()).hexdigest(),
+                "versions": {"finance-flow": version("finance-flow"), "pyarrow": version("pyarrow")},
+            },
+            "output": {"key": output_key, "size": output_path.stat().st_size, "sha256": _file_sha256(output_path), "row_count": transform.row_count},
+            "quality": transform.quality,
+            "produced_at": datetime.now(UTC).isoformat(),
+        }
+
+    def _write_sidecar(self, path: Path, sidecar: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        temp_path.write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n")
+        temp_path.replace(path)
 
     def _materialize_context(self, context: MassiveDailyBarsFlatFileContext, dry_run: bool | None = None) -> ArtifactMaterializeContext:
         return ArtifactMaterializeContext(
@@ -289,9 +349,30 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
                     metadata={**metadata, "row_count": transform.row_count} if transform.row_count is not None else metadata,
                 )
             )
-        statuses = [local_write.status]
+
+        sidecar_key = self.sidecar_key(context)
+        sidecar_path = self.sidecar_path(context)
+        if not dry_run and (self.overwrite or transform.status == "transformed" or not sidecar_path.exists()):
+            self._write_sidecar(sidecar_path, self._sidecar(context, output_key, output_path, materialization, transform))
+        sidecar_context = {
+            "key": sidecar_key,
+            "path": sidecar_path,
+            "media_type": "application/json",
+            "dataset": "massive-stocks-bars-daily",
+            "overwrite": self.overwrite,
+            "dry_run": dry_run,
+            "metadata": {"date": context.date.isoformat(), "output_key": output_key},
+        }
+        sidecar_local_write = self.local_writer(ArtifactWriteFileContext(**sidecar_context, stage="transform"))
+        sidecar_backup_write = None
+        if self.backup_writer is not None:
+            sidecar_backup_write = self.backup_writer(ArtifactWriteFileContext(**sidecar_context, stage="load"))
+
+        statuses = [local_write.status, sidecar_local_write.status]
         if backup_write is not None:
             statuses.append(backup_write.status)
+        if sidecar_backup_write is not None:
+            statuses.append(sidecar_backup_write.status)
         status = "planned" if dry_run else next((value for value in statuses if value != "exists"), "exists")
         return MassiveDailyBarsFlatFileResult(
             date=context.date,
@@ -302,7 +383,45 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
             transform=transform,
             local_write=local_write,
             backup_write=backup_write,
+            sidecar_key=sidecar_key,
+            sidecar_local_write=sidecar_local_write,
+            sidecar_backup_write=sidecar_backup_write,
         )
+
+
+def _parquet_quality(path: Path) -> dict[str, Any]:
+    """Recompute daily-bar quality counters from a written partition; one session is small enough to read whole."""
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path, columns=["ticker", "open", "high", "low", "close", "volume", "transactions"])
+
+    def count(mask: Any) -> int:
+        return int(pc.sum(mask).as_py() or 0)
+
+    open_, high, low, close = (table.column(name) for name in ("open", "high", "low", "close"))
+    volume, transactions = table.column("volume"), table.column("transactions")
+    ticker_count = int(pc.count_distinct(table.column("ticker")).as_py())
+    invalid_high = pc.or_(pc.less(high, open_), pc.or_(pc.less(high, low), pc.less(high, close)))
+    invalid_low = pc.or_(pc.greater(low, open_), pc.or_(pc.greater(low, high), pc.greater(low, close)))
+    return {
+        "row_count": table.num_rows,
+        "ticker_count": ticker_count,
+        "duplicate_ticker_count": table.num_rows - ticker_count,
+        "null_required_count": sum(column.null_count for column in table.columns),
+        "negative_volume_or_transactions_count": count(pc.or_(pc.less(volume, 0), pc.less(transactions, 0))),
+        "ohlc_violation_count": count(pc.or_(invalid_high, invalid_low)),
+        "zero_volume_count": count(pc.equal(volume, 0)),
+        "zero_transactions_count": count(pc.equal(transactions, 0)),
+    }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _format_key(template: str, value: date) -> str:
