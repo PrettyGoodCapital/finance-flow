@@ -1,6 +1,6 @@
 from typing import Any
 
-from ccflow import CallableModel, ContextType, DateContext, Flow, GenericResult, ResultType
+from ccflow import CallableModel, DateContext, Flow, GenericResult
 from finance_etl import SymbolUniverseResult
 from pydantic import Field
 
@@ -14,11 +14,11 @@ class ChildContext(DateContext):
 
 class FakeUniverseModel(CallableModel):
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[DateContext]:
         return DateContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -31,11 +31,11 @@ class FakeChildModel(CallableModel):
     output: Any = None
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[ChildContext]:
         return ChildContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call

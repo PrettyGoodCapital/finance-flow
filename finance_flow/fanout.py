@@ -3,7 +3,7 @@ import posixpath
 from datetime import date
 from typing import Any
 
-from ccflow import CallableModel, ContextType, Flow, GenericResult, ResultType
+from ccflow import CallableModel, ContextBase, Flow, GenericResult, GraphDepList
 from finance_etl import SymbolUniverseResult
 from pydantic import Field, PrivateAttr
 
@@ -21,18 +21,18 @@ class SymbolFanoutModel(CallableModel):
     skip_existing: bool = False
     explain: bool = False
 
-    _contexts_by_parent: dict[str, list[ContextType]] = PrivateAttr(default_factory=dict)
+    _contexts_by_parent: dict[str, list[ContextBase]] = PrivateAttr(default_factory=dict)
     _inventory_by_parent: dict[str, dict[str, int]] = PrivateAttr(default_factory=dict)
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[ContextBase]:
         return self.universe_model.context_type
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
-    def _symbols(self, context: ContextType) -> list[str]:
+    def _symbols(self, context: ContextBase) -> list[str]:
         result = self.universe_model(context=context)
         value = result.value if isinstance(result, GenericResult) else result
         if isinstance(value, SymbolUniverseResult):
@@ -44,14 +44,14 @@ class SymbolFanoutModel(CallableModel):
         symbols = sorted({str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()})
         return symbols[: self.max_symbols] if self.max_symbols is not None else symbols
 
-    def _context_date(self, context: ContextType) -> date | None:
+    def _context_date(self, context: ContextBase) -> date | None:
         for field in ("date", "as_of_date", "session_date"):
             value = getattr(context, field, None)
             if value is not None:
                 return value
         return None
 
-    def _child_contexts(self, context: ContextType) -> list[ContextType]:
+    def _child_contexts(self, context: ContextBase) -> list[ContextBase]:
         base = context.model_dump(mode="python")
         base.pop("type_", None)
         context_date = self._context_date(context)
@@ -63,10 +63,10 @@ class SymbolFanoutModel(CallableModel):
             contexts.append(self.model.context_type.model_validate(values))
         return contexts
 
-    def _context_key(self, context: ContextType) -> str:
+    def _context_key(self, context: ContextBase) -> str:
         return json.dumps(context.model_dump(mode="json"), sort_keys=True)
 
-    def _missing_contexts(self, contexts: list[ContextType]) -> list[ContextType]:
+    def _missing_contexts(self, contexts: list[ContextBase]) -> list[ContextBase]:
         if not self.skip_existing or self.explain:
             return contexts
         output = getattr(self.model, "output", None)
@@ -81,7 +81,7 @@ class SymbolFanoutModel(CallableModel):
         return [context for context, key in zip(contexts, keys) if key not in existing]
 
     @Flow.deps
-    def __deps__(self, context: ContextType) -> list[tuple[CallableModel, list[ContextType]]]:
+    def __deps__(self, context: ContextBase) -> GraphDepList:
         context_key = self._context_key(context)
         planned_contexts = self._child_contexts(context)
         self._contexts_by_parent[context_key] = self._missing_contexts(planned_contexts)
@@ -94,7 +94,7 @@ class SymbolFanoutModel(CallableModel):
         return [(self.universe_model, [context]), (self.model, self._contexts_by_parent[context_key])]
 
     @Flow.call
-    def __call__(self, context: ContextType) -> GenericResult:
+    def __call__(self, context: ContextBase) -> GenericResult:
         context_key = self._context_key(context)
         contexts = self._contexts_by_parent.get(context_key)
         if contexts is None:

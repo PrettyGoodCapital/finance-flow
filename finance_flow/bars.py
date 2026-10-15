@@ -2,8 +2,8 @@ import json
 from datetime import date
 from typing import Any
 
-from ccflow import CallableModel, ContextBase, ContextType, DateContext, Flow, GenericResult, ResultType
-from ccflow_etl import ArtifactReadContext, ArtifactReadModel, ArtifactWriteContext, ArtifactWriteModel, PayloadCodec
+from ccflow import CallableModel, ContextBase, ContextType, DateContext, Flow, GenericResult
+from ccflow_etl import ArtifactReadContext, ArtifactReadModel, ArtifactWriteContext, ArtifactWriteModel, CacheFormatName, PayloadCodec
 from pydantic import BaseModel, field_serializer
 
 __all__ = (
@@ -40,11 +40,11 @@ class MassiveDailyBarsNormalizeContext(ContextBase):
 
 class MassiveDailyBarsNormalizeModel(CallableModel):
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[MassiveDailyBarsNormalizeContext]:
         return MassiveDailyBarsNormalizeContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -68,14 +68,14 @@ class MassiveDailyBarsArtifactModel(CallableModel):
     provider_name: str = "massive"
     schema_name: str = "daily_bar"
     schema_version: str = "1"
-    return_type: str = "parquet"
+    return_type: CacheFormatName = "parquet"
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[MassiveDailyBarsArtifactContext]:
         return MassiveDailyBarsArtifactContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     def input_key(self, context: MassiveDailyBarsArtifactContext) -> str:

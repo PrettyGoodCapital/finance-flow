@@ -1,6 +1,7 @@
 from datetime import date
+from typing import cast
 
-from ccflow import CallableModel, ContextBase, ContextType, Flow, GenericResult, ResultType
+from ccflow import CallableModel, ContextBase, Flow, GenericResult
 from finance_datagen import generate_prices, generate_signal
 from finance_etl import (
     BacktestResultRecord,
@@ -85,7 +86,7 @@ class BuildUniverseContext(ContextBase):
             if self.market_partition.as_of_date != self.as_of_date:
                 raise ValueError("market_partition.as_of_date must match as_of_date.")
             if self.market_partition.exchange:
-                self.exchange = self.market_partition.exchange
+                object.__setattr__(self, "exchange", self.market_partition.exchange)
         return self
 
 
@@ -93,11 +94,11 @@ class BuildUniverseModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[BuildUniverseContext]:
         return BuildUniverseContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -157,11 +158,11 @@ class CalculateSignalsModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[CalculateSignalsContext]:
         return CalculateSignalsContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -169,7 +170,7 @@ class CalculateSignalsModel(CallableModel):
         members = context.universe
         if members:
             symbols = [member.symbol for member in members]
-            instrument_ids = {member.symbol: member.instrument_id for member in members}
+            instrument_ids = {member.symbol: cast(str, member.instrument_id) for member in members}
         else:
             symbols = context.symbols or [f"A{i:04d}" for i in range(context.n_assets)]
             instrument_ids = {symbol: f"GEN:{symbol}" for symbol in symbols}
@@ -240,11 +241,11 @@ class OptimizePortfolioModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[OptimizePortfolioContext]:
         return OptimizePortfolioContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -333,11 +334,11 @@ class ConstructTargetPositionsModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[ConstructTargetPositionsContext]:
         return ConstructTargetPositionsContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -407,11 +408,11 @@ class BacktestPortfolioModel(CallableModel):
     strategy_id: str = "default-strategy"
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[BacktestPortfolioContext]:
         return BacktestPortfolioContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -472,11 +473,11 @@ class EvaluateRealPortfolioModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[EvaluateRealPortfolioContext]:
         return EvaluateRealPortfolioContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -530,11 +531,11 @@ class BuildAlphaReportModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[BuildAlphaReportContext]:
         return BuildAlphaReportContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
@@ -590,11 +591,11 @@ class BuildRiskReportModel(CallableModel):
     explain: bool = False
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[BuildRiskReportContext]:
         return BuildRiskReportContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call

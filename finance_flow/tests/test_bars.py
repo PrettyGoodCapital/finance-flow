@@ -3,7 +3,7 @@ from typing import ClassVar
 
 import pyarrow.parquet as pq
 import pytest
-from ccflow import CallableModel, ContextType, DateContext, Flow, GenericResult, ResultType
+from ccflow import CallableModel, DateContext, Flow, GenericResult
 from ccflow_etl import LocalFileOutput, NoOpArtifactStore
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
@@ -28,11 +28,11 @@ class FakeRawDailyAggregateModel(CallableModel):
     calls: ClassVar[list[RawDailyAggregateContext]] = []
 
     @property
-    def context_type(self) -> type[ContextType]:
+    def context_type(self) -> type[RawDailyAggregateContext]:
         return RawDailyAggregateContext
 
     @property
-    def result_type(self) -> type[ResultType]:
+    def result_type(self) -> type[GenericResult]:
         return GenericResult
 
     @Flow.call
