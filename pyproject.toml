@@ -30,9 +30,10 @@ classifiers = [
 
 dependencies = [
     "ccflow>=0.6.10",
-    "ccflow-etl",
+    "ccflow-etl[polars]>=0.4.1",
     "finance-datagen",
     "finance-etl",
+    "polars",
     "pyarrow",
     "pydantic",
 ]

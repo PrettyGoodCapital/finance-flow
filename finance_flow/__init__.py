@@ -6,11 +6,12 @@ if TYPE_CHECKING:
     from .bars import *
     from .fanout import *
     from .massive_flat_files import *
+    from .securities import *
     from .tasks import *
 
 # Exports resolve on first access, importing only the submodule that defines them, so locating
 # the config package for Hydra and using a single model do not import every module and dependency.
-_SUBMODULES = ("bars", "fanout", "massive_flat_files", "tasks")
+_SUBMODULES = ("bars", "fanout", "massive_flat_files", "securities", "tasks")
 _EXPORTS: dict[str, str] | None = None
 
 
