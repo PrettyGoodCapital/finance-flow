@@ -201,3 +201,24 @@ def test_security_master_lookups_return_point_in_time_frames(tmp_path):
     )
     joined = master.attach_security_id(bars, date(2025, 1, 6), date(2025, 1, 7)).collect().sort("date", "ticker")
     assert joined.select("ticker", "security_id").rows() == [("OLD", "FIGI1"), ("MISSING", None), ("NEW", "FIGI1")]
+
+
+def test_security_listings_apply_manual_figis_within_their_windows(tmp_path):
+    snapshot, fill, output = _datasets(tmp_path)
+    manual = tmp_path / "manual_figis.csv"
+    manual.write_text(
+        "ticker,valid_from,valid_to,composite_figi,share_class_figi,source\n"
+        "ABRpD,2025-01-01,2025-01-31,BBG00PREF001,,taq_cusip\n"
+        "NEWW,2024-01-01,2024-12-31,BBG00OLDNEW1,,taq_cusip\n"
+        "ALPXW,2025-01-01,2025-01-31,BBG00ALPX001,BBG00ALPX002,openfigi_search\n"
+    )
+    model = SecurityListingsModel(snapshot=snapshot, fills={"openfigi": fill}, output=output, manual_figis=str(manual))
+
+    model(DAY)
+    rows = {row["ticker"]: row for row in output.read_frame(DAY).to_dicts()}
+
+    assert (rows["ABRpD"]["security_id"], rows["ABRpD"]["figi_source"], rows["ABRpD"]["fill_status"]) == ("BBG00PREF001", "taq_cusip", "manual")
+    assert rows["ABRpD"]["share_class_figi"] is None
+    assert rows["NEWW"]["security_id"] is None
+    assert (rows["ALPXW"]["security_id"], rows["ALPXW"]["share_class_figi"]) == ("BBG00ALPX001", "BBG00ALPX002")
+    assert rows["AAC.WS"]["figi_source"] == "openfigi"

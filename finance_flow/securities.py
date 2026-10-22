@@ -124,6 +124,13 @@ class SecurityListingsModel(CallableModel):
         default_factory=dict, description="FIGI fill bundles by source name, tried in order. Rows carry record.ticker, status, and matches."
     )
     fill_models: dict[str, CallableModel] = Field(default_factory=dict, description="Models that produce the fill bundles, declared as dependencies.")
+    manual_figis: str | None = Field(
+        default=None,
+        description=(
+            "CSV of manually resolved FIGIs (ticker, valid_from, valid_to, composite_figi, share_class_figi, source), as a file path or"
+            " package:resource. Applied to listings that no fill identifies, within each row's date window."
+        ),
+    )
     output: DatasetDefinition
     min_name_overlap: float = Field(default=0.5, ge=0, le=1)
     explain: bool = False
@@ -164,7 +171,32 @@ class SecurityListingsModel(CallableModel):
             fills[source] = rows
         return fills
 
-    def _listing_row(self, record: dict[str, Any], fills: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any]:
+    def _manual_figis(self) -> dict[str, list[dict[str, Any]]]:
+        if not self.manual_figis:
+            return {}
+        import csv
+        import io
+        from importlib.resources import files
+
+        if ":" in self.manual_figis and not self.manual_figis.startswith("/"):
+            package, resource = self.manual_figis.split(":", 1)
+            text = files(package).joinpath(resource).read_text()
+        else:
+            with open(self.manual_figis) as handle:
+                text = handle.read()
+        rows: dict[str, list[dict[str, Any]]] = {}
+        for row in csv.DictReader(io.StringIO(text)):
+            row["valid_from"], row["valid_to"] = date.fromisoformat(row["valid_from"]), date.fromisoformat(row["valid_to"])
+            rows.setdefault(row["ticker"], []).append(row)
+        return rows
+
+    def _listing_row(
+        self,
+        record: dict[str, Any],
+        fills: dict[str, dict[str, dict[str, Any]]],
+        manual: dict[str, list[dict[str, Any]]] | None = None,
+        value: date | None = None,
+    ) -> dict[str, Any]:
         row = {field: record.get(field) for field in _LISTING_FIELDS}
         row |= {"massive_composite_figi": record.get("composite_figi"), "massive_share_class_figi": record.get("share_class_figi")}
         if record.get("composite_figi"):
@@ -191,6 +223,14 @@ class SecurityListingsModel(CallableModel):
                     "figi_source": source,
                     "fill_status": status,
                 }
+        for entry in (manual or {}).get(record["ticker"], []):
+            if value is not None and entry["valid_from"] <= value <= entry["valid_to"] and entry.get("composite_figi"):
+                return row | {
+                    "composite_figi": entry["composite_figi"],
+                    "share_class_figi": entry.get("share_class_figi") or None,
+                    "figi_source": entry.get("source") or "manual",
+                    "fill_status": "manual",
+                }
         return row | {"composite_figi": None, "share_class_figi": None, "figi_source": None, "fill_status": status}
 
     @Flow.call
@@ -213,7 +253,8 @@ class SecurityListingsModel(CallableModel):
         payload = json.loads(self.snapshot.read_bytes(context.date))
         records = [record for record in payload.get(self.records_key, []) if isinstance(record, dict) and record.get("ticker")]
         fills = self._fill_matches(context.date)
-        rows = [self._listing_row(record, fills) for record in records]
+        manual = self._manual_figis()
+        rows = [self._listing_row(record, fills, manual, context.date) for record in records]
         frame = pl.DataFrame(rows, infer_schema_length=None).with_columns(
             pl.lit(context.date).alias("date"), pl.col("composite_figi").alias("security_id")
         )
