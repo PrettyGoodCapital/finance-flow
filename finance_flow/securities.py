@@ -117,6 +117,9 @@ class SecurityListingsModel(CallableModel):
     Each snapshot record becomes one row keyed by ticker. Records with a composite FIGI keep it. For the rest, the
     ``fills`` are tried in order, and the first match that passes ``figi_fill_status`` supplies the FIGIs. A listing no
     fill can identify keeps blank FIGIs. ``security_id`` is the resolved composite FIGI.
+
+    Identifier fills arrive later than the listings, so a listing an identifier fill resolved on the previous session
+    keeps those FIGIs, with ``fill_status`` ``carried``, while its name and type are unchanged and no fill resolves it.
     """
 
     snapshot: DatasetDefinition = Field(description="Listings snapshot partitions: JSON with records under records_key.")
@@ -139,6 +142,7 @@ class SecurityListingsModel(CallableModel):
     )
     output: DatasetDefinition
     min_name_overlap: float = Field(default=0.5, ge=0, le=1)
+    carry_lookback_days: int = Field(default=10, ge=1, description="How far back to look for the previous session's listings to carry from.")
     explain: bool = False
     overwrite_output: bool = False
 
@@ -155,6 +159,20 @@ class SecurityListingsModel(CallableModel):
 
     def _dependency_context(self, model: CallableModel, value: date) -> ContextType:
         return model.context_type.model_validate({"date": value})
+
+    def _carried(self, value: date) -> tuple[date | None, dict[str, dict[str, Any]]]:
+        """The previous session's listings resolved by identifier fills, by ticker."""
+        if not self.identifier_fills:
+            return None, {}
+        import polars as pl
+
+        sessions = self.output.partitions(value - timedelta(days=self.carry_lookback_days), value - timedelta(days=1))
+        previous = next((day for day in reversed(sessions) if self.output.exists(day)), None)
+        if previous is None:
+            return None, {}
+        frame = self.output.read_frame(previous).filter(pl.col("figi_source").is_in(self.identifier_fills) & pl.col("security_id").is_not_null())
+        rows = frame.select("ticker", "name", "type", "composite_figi", "share_class_figi", "figi_source").to_dicts()
+        return previous, {row["ticker"]: row for row in rows}
 
     @Flow.deps
     def __deps__(self, context: DateContext) -> GraphDepList:
@@ -202,6 +220,7 @@ class SecurityListingsModel(CallableModel):
         fills: dict[str, dict[str, dict[str, Any]]],
         manual: dict[str, list[dict[str, Any]]] | None = None,
         value: date | None = None,
+        carried: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         row = {field: record.get(field) for field in _LISTING_FIELDS}
         row |= {"massive_composite_figi": record.get("composite_figi"), "massive_share_class_figi": record.get("share_class_figi")}
@@ -229,6 +248,14 @@ class SecurityListingsModel(CallableModel):
                     "figi_source": source,
                     "fill_status": status,
                 }
+        prior = (carried or {}).get(record["ticker"])
+        if prior and (prior["name"], prior["type"]) == (record.get("name"), record.get("type")):
+            return row | {
+                "composite_figi": prior["composite_figi"],
+                "share_class_figi": prior["share_class_figi"],
+                "figi_source": prior["figi_source"],
+                "fill_status": "carried",
+            }
         for entry in (manual or {}).get(record["ticker"], []):
             if value is not None and entry["valid_from"] <= value <= entry["valid_to"] and entry.get("composite_figi"):
                 return row | {
@@ -260,14 +287,19 @@ class SecurityListingsModel(CallableModel):
         records = [record for record in payload.get(self.records_key, []) if isinstance(record, dict) and record.get("ticker")]
         fills = self._fill_matches(context.date)
         manual = self._manual_figis()
-        rows = [self._listing_row(record, fills, manual, context.date) for record in records]
+        carried_from, carried = self._carried(context.date)
+        rows = [self._listing_row(record, fills, manual, context.date, carried) for record in records]
         frame = pl.DataFrame(rows, infer_schema_length=None).with_columns(
             pl.lit(context.date).alias("date"), pl.col("composite_figi").alias("security_id")
         )
         figi_sources = frame.group_by("figi_source").len().rows()
         fill_statuses = frame.filter(pl.col("fill_status").is_not_null()).group_by("fill_status").len().rows()
         lineage = {
-            "sources": {"snapshot": self.snapshot.uri(context.date), **{source: dataset.uri(context.date) for source, dataset in self.fills.items()}},
+            "sources": {
+                "snapshot": self.snapshot.uri(context.date),
+                **{source: dataset.uri(context.date) for source, dataset in self.fills.items()},
+                **({"carried_from": self.output.uri(carried_from)} if carried_from else {}),
+            },
             "quality": {
                 "row_count": frame.height,
                 "missing_security_id_count": frame["security_id"].null_count(),

@@ -291,3 +291,36 @@ def test_security_listings_accept_identifier_fills_without_name_validation(tmp_p
     rejected = {row["ticker"]: row for row in validated.read_frame(DAY).to_dicts()}["ABRpD"]
     assert (accepted["security_id"], accepted["figi_source"]) == ("BBG00PREF001", "taq_cusip")
     assert (rejected["security_id"], rejected["fill_status"]) == (None, "rejected_name")
+
+
+def test_security_listings_carry_identifier_fills_forward(tmp_path):
+    from datetime import timedelta
+
+    snapshot, fill, output = _datasets(tmp_path)
+    cusip = DatasetDefinition(
+        name="cusip", key_template="raw/cusip/{date}.jsonl.gz", store=LocalFileOutput(path=tmp_path / "store"), format="jsonl.gz"
+    )
+    rows = [{"record": SNAPSHOT[4], "status": "matched", "matches": [{"compositeFIGI": "BBG00PREF001", "shareClassFIGI": "BBG00PREF002"}]}]
+    cusip.write_bytes(DAY, gzip.compress(b"".join(json.dumps(row).encode() + b"\n" for row in rows)))
+    renamed = [
+        dict(record, name="Arbor Realty Trust 6.375% Series D Preferred Called") if record["ticker"] == "ABRpD" else record for record in SNAPSHOT
+    ]
+    snapshot.write_bytes(DAY + timedelta(days=1), json.dumps({"results": SNAPSHOT}).encode())
+    snapshot.write_bytes(DAY + timedelta(days=2), json.dumps({"results": renamed}).encode())
+    model = SecurityListingsModel(snapshot=snapshot, fills={"openfigi": fill, "taq_cusip": cusip}, output=output, identifier_fills=["taq_cusip"])
+
+    for offset in range(3):
+        model(DAY + timedelta(days=offset))
+
+    def preferred(offset):
+        return {row["ticker"]: row for row in output.read_frame(DAY + timedelta(days=offset)).to_dicts()}["ABRpD"]
+
+    assert (preferred(0)["fill_status"], preferred(1)["fill_status"]) == ("matched", "carried")
+    assert (preferred(1)["security_id"], preferred(1)["share_class_figi"], preferred(1)["figi_source"]) == (
+        "BBG00PREF001",
+        "BBG00PREF002",
+        "taq_cusip",
+    )
+    assert preferred(2)["security_id"] is None
+    sidecar = json.loads((tmp_path / "store" / output.sidecar_key(DAY + timedelta(days=1))).read_text())
+    assert sidecar["sources"]["carried_from"].endswith("curated/listings/2025-01-06.parquet")
