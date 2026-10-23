@@ -440,6 +440,7 @@ class ListingsResolutionCheckModel(CallableModel):
     ignore_types: list[str] = Field(default_factory=list, description="Listing types excluded from the check.")
     fail_on_unresolved: bool = False
     lookback_days: int = Field(default=10, ge=1, description="How far back to look for the latest session on or before the date.")
+    explain: bool = False
     logger_name: str = __name__
 
     @property
@@ -454,6 +455,8 @@ class ListingsResolutionCheckModel(CallableModel):
     def __call__(self, context: DateContext) -> GenericResult:
         import polars as pl
 
+        if self.explain:
+            return GenericResult(value={"date": context.date.isoformat(), "listings": self.listings.name, "status": "planned"})
         logger = logging.getLogger(self.logger_name)
         # Check the latest session on or before the date, so weekends and holidays check the session before them.
         available = [

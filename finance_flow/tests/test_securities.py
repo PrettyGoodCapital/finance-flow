@@ -259,6 +259,7 @@ def test_listings_resolution_check_flags_new_unresolved_listings_after_grace(tmp
     assert check.model_copy(update={"grace_sessions": 3})(date(2025, 1, 8)).value["status"] == "ok"
     assert check.model_copy(update={"grace_sessions_by_type": {"CS": 5}})(date(2025, 1, 8)).value["status"] == "ok"
     assert check(date(2025, 1, 11)).value["date"] == "2025-01-08"
+    assert check.model_copy(update={"explain": True})(date(2025, 1, 8)).value["status"] == "planned"
     assert check.model_copy(update={"ignore_types": ["CS"]})(date(2025, 1, 8)).value["unresolved_count"] == 0
     backlog = ListingsResolutionCheckModel(listings=listings, baseline_date=date(2025, 1, 7), max_unresolved=0)
     assert backlog(date(2025, 1, 6)).value["unresolved_count"] == 1
