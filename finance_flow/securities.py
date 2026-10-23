@@ -432,6 +432,7 @@ class ListingsResolutionCheckModel(CallableModel):
     max_unresolved: int | None = Field(default=None, ge=0, description="Largest unresolved count allowed on a session.")
     ignore_types: list[str] = Field(default_factory=list, description="Listing types excluded from the check.")
     fail_on_unresolved: bool = False
+    lookback_days: int = Field(default=10, ge=1, description="How far back to look for the latest session on or before the date.")
     logger_name: str = __name__
 
     @property
@@ -447,8 +448,15 @@ class ListingsResolutionCheckModel(CallableModel):
         import polars as pl
 
         logger = logging.getLogger(self.logger_name)
-        if not self.listings.exists(context.date):
-            raise RuntimeError(f"listings check {context.date}: no listings partition")
+        # Check the latest session on or before the date, so weekends and holidays check the session before them.
+        available = [
+            value
+            for value in reversed(self.listings.partitions(context.date - timedelta(days=self.lookback_days), context.date))
+            if self.listings.exists(value)
+        ]
+        if not available:
+            raise RuntimeError(f"listings check {context.date}: no listings partition in the previous {self.lookback_days} days")
+        context = context.model_copy(update={"date": available[0]})
         today = self.listings.read_frame(context.date).filter(~pl.col("type").is_in(self.ignore_types) | pl.col("type").is_null())
         unresolved = today.filter(pl.col("security_id").is_null()).select(
             [column for column in ("ticker", "name", "type", "fill_status") if column in today.columns]
