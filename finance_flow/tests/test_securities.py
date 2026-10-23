@@ -257,6 +257,7 @@ def test_listings_resolution_check_flags_new_unresolved_listings_after_grace(tmp
     assert (result["unresolved_count"], result["status"]) == (1, "failed")
     assert [row["ticker"] for row in result["overdue"]] == ["FRESH"]
     assert check.model_copy(update={"grace_sessions": 3})(date(2025, 1, 8)).value["status"] == "ok"
+    assert check.model_copy(update={"grace_sessions_by_type": {"CS": 5}})(date(2025, 1, 8)).value["status"] == "ok"
     assert check(date(2025, 1, 11)).value["date"] == "2025-01-08"
     assert check.model_copy(update={"ignore_types": ["CS"]})(date(2025, 1, 8)).value["unresolved_count"] == 0
     backlog = ListingsResolutionCheckModel(listings=listings, baseline_date=date(2025, 1, 7), max_unresolved=0)
@@ -265,3 +266,27 @@ def test_listings_resolution_check_flags_new_unresolved_listings_after_grace(tmp
         check.model_copy(update={"fail_on_unresolved": True})(date(2025, 1, 8))
     with pytest.raises(RuntimeError, match="exceed 0"):
         backlog.model_copy(update={"fail_on_unresolved": True})(date(2025, 1, 6))
+
+
+def test_security_listings_accept_identifier_fills_without_name_validation(tmp_path):
+    snapshot, fill, output = _datasets(tmp_path)
+    cusip = DatasetDefinition(
+        name="cusip", key_template="raw/cusip/{date}.jsonl.gz", store=LocalFileOutput(path=tmp_path / "store"), format="jsonl.gz"
+    )
+    rows = [
+        {
+            "record": SNAPSHOT[4],
+            "status": "matched",
+            "matches": [{"compositeFIGI": "BBG00PREF001", "name": "ABR 6.375 PERP D", "securityType2": "Preferred Stock"}],
+        }
+    ]
+    cusip.write_bytes(DAY, gzip.compress(b"".join(json.dumps(row).encode() + b"\n" for row in rows)))
+
+    SecurityListingsModel(snapshot=snapshot, fills={"openfigi": fill, "taq_cusip": cusip}, output=output, identifier_fills=["taq_cusip"])(DAY)
+    validated = output.model_copy(update={"key_template": "curated/validated/{date}.parquet"})
+    SecurityListingsModel(snapshot=snapshot, fills={"openfigi": fill, "taq_cusip": cusip}, output=validated)(DAY)
+
+    accepted = {row["ticker"]: row for row in output.read_frame(DAY).to_dicts()}["ABRpD"]
+    rejected = {row["ticker"]: row for row in validated.read_frame(DAY).to_dicts()}["ABRpD"]
+    assert (accepted["security_id"], accepted["figi_source"]) == ("BBG00PREF001", "taq_cusip")
+    assert (rejected["security_id"], rejected["fill_status"]) == (None, "rejected_name")

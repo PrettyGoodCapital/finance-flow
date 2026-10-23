@@ -126,6 +126,10 @@ class SecurityListingsModel(CallableModel):
         default_factory=dict, description="FIGI fill bundles by source name, tried in order. Rows carry record.ticker, status, and matches."
     )
     fill_models: dict[str, CallableModel] = Field(default_factory=dict, description="Models that produce the fill bundles, declared as dependencies.")
+    identifier_fills: list[str] = Field(
+        default_factory=list,
+        description="Fill sources matched by identifier (CUSIP or ISIN) rather than ticker, accepted without the type and name check.",
+    )
     manual_figis: str | None = Field(
         default=None,
         description=(
@@ -217,7 +221,7 @@ class SecurityListingsModel(CallableModel):
                 status = fill.get("status") or "no_match"
                 continue
             match = fill["matches"][0]
-            status = figi_fill_status(record, match, self.min_name_overlap)
+            status = "matched" if source in self.identifier_fills else figi_fill_status(record, match, self.min_name_overlap)
             if status == "matched":
                 return row | {
                     "composite_figi": match.get("compositeFIGI"),
@@ -429,6 +433,9 @@ class ListingsResolutionCheckModel(CallableModel):
     listings: DatasetDefinition
     baseline_date: date = Field(description="Listings first seen on or after this date must resolve within the grace period.")
     grace_sessions: int = Field(default=3, ge=1, description="Sessions a new listing may stay unresolved, counting its first.")
+    grace_sessions_by_type: dict[str, int] = Field(
+        default_factory=dict, description="Grace periods for listing types that resolve later, such as preferreds waiting for a weekly CUSIP source."
+    )
     max_unresolved: int | None = Field(default=None, ge=0, description="Largest unresolved count allowed on a session.")
     ignore_types: list[str] = Field(default_factory=list, description="Listing types excluded from the check.")
     fail_on_unresolved: bool = False
@@ -481,7 +488,12 @@ class ListingsResolutionCheckModel(CallableModel):
             )
             .sort("first_seen", "ticker")
         )
-        overdue = new.filter(pl.col("sessions") >= self.grace_sessions)
+        grace = (
+            pl.col("type").replace_strict(self.grace_sessions_by_type, default=self.grace_sessions, return_dtype=pl.Int64)
+            if "type" in new.columns
+            else pl.lit(self.grace_sessions)
+        )
+        overdue = new.filter(pl.col("sessions") >= grace)
         too_many = self.max_unresolved is not None and unresolved.height > self.max_unresolved
         value = {
             "date": context.date.isoformat(),
