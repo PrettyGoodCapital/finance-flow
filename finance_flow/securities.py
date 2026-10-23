@@ -1,5 +1,6 @@
 import gzip
 import json
+import logging
 import re
 from datetime import date, timedelta
 from typing import Any
@@ -9,6 +10,7 @@ from ccflow_etl import DatasetDefinition
 from pydantic import Field
 
 __all__ = (
+    "ListingsResolutionCheckModel",
     "SecurityListingsModel",
     "SecurityMaster",
     "SymbolHistoryModel",
@@ -414,3 +416,100 @@ class SecurityMaster(BaseModel):
             pl.col("date").alias(date_col), pl.col("ticker").alias(ticker_col), "security_id", "composite_figi", "share_class_figi"
         )
         return frame.join(listings, on=[date_col, ticker_col], how="left")
+
+
+class ListingsResolutionCheckModel(CallableModel):
+    """Check that a session's listings stay resolved to security IDs.
+
+    The check fails when a ticker first listed on or after ``baseline_date`` is still unresolved after
+    ``grace_sessions`` sessions, or when the session's unresolved count exceeds ``max_unresolved``. Tickers listed
+    before ``baseline_date`` that were never resolved are the known backlog and only count toward ``max_unresolved``.
+    """
+
+    listings: DatasetDefinition
+    baseline_date: date = Field(description="Listings first seen on or after this date must resolve within the grace period.")
+    grace_sessions: int = Field(default=3, ge=1, description="Sessions a new listing may stay unresolved, counting its first.")
+    max_unresolved: int | None = Field(default=None, ge=0, description="Largest unresolved count allowed on a session.")
+    ignore_types: list[str] = Field(default_factory=list, description="Listing types excluded from the check.")
+    fail_on_unresolved: bool = False
+    logger_name: str = __name__
+
+    @property
+    def context_type(self) -> type[DateContext]:
+        return DateContext
+
+    @property
+    def result_type(self) -> type[GenericResult]:
+        return GenericResult
+
+    @Flow.call
+    def __call__(self, context: DateContext) -> GenericResult:
+        import polars as pl
+
+        logger = logging.getLogger(self.logger_name)
+        if not self.listings.exists(context.date):
+            raise RuntimeError(f"listings check {context.date}: no listings partition")
+        today = self.listings.read_frame(context.date).filter(~pl.col("type").is_in(self.ignore_types) | pl.col("type").is_null())
+        unresolved = today.filter(pl.col("security_id").is_null()).select(
+            [column for column in ("ticker", "name", "type", "fill_status") if column in today.columns]
+        )
+        start = self.listings.first_date or self.baseline_date
+        first_seen = (
+            self.listings.scan(start, context.date)
+            .filter(pl.col("ticker").is_in(unresolved["ticker"].to_list()))
+            .group_by("ticker")
+            .agg(pl.col("date").min().alias("first_seen"))
+            .collect(engine="streaming")
+        )
+        sessions = self.listings.partitions(start, context.date)
+        index = {value: position for position, value in enumerate(sessions)}
+        new = (
+            unresolved.join(first_seen, on="ticker", how="left")
+            .filter(pl.col("first_seen") >= self.baseline_date)
+            .with_columns(
+                pl.col("first_seen")
+                .map_elements(lambda value: len(sessions) - index.get(value, len(sessions)), return_dtype=pl.Int64)
+                .alias("sessions")
+            )
+            .sort("first_seen", "ticker")
+        )
+        overdue = new.filter(pl.col("sessions") >= self.grace_sessions)
+        too_many = self.max_unresolved is not None and unresolved.height > self.max_unresolved
+        value = {
+            "date": context.date.isoformat(),
+            "listing_count": today.height,
+            "unresolved_count": unresolved.height,
+            "max_unresolved": self.max_unresolved,
+            "new_unresolved": new.to_dicts(),
+            "overdue": overdue.to_dicts(),
+            "status": "failed" if (overdue.height or too_many) else "ok",
+        }
+        logger.info(
+            "listings check %s: %s listings, %s unresolved (max %s), %s new unresolved, %s overdue",
+            context.date,
+            today.height,
+            unresolved.height,
+            self.max_unresolved,
+            new.height,
+            overdue.height,
+        )
+        for row in overdue.to_dicts():
+            logger.warning(
+                "unresolved %s (%s, %s) first listed %s, %s sessions: %s",
+                row["ticker"],
+                row.get("type"),
+                row.get("fill_status"),
+                row["first_seen"],
+                row["sessions"],
+                row.get("name"),
+            )
+        if self.fail_on_unresolved and value["status"] == "failed":
+            reasons = []
+            if overdue.height:
+                reasons.append(
+                    f"{overdue.height} new listings unresolved after {self.grace_sessions} sessions: {', '.join(overdue['ticker'].to_list()[:20])}"
+                )
+            if too_many:
+                reasons.append(f"{unresolved.height} unresolved listings exceed {self.max_unresolved}")
+            raise RuntimeError(f"listings check {context.date}: " + "; ".join(reasons))
+        return GenericResult(value=value)

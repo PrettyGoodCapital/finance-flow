@@ -224,3 +224,43 @@ def test_security_listings_apply_manual_figis_within_their_windows(tmp_path):
     assert rows["NEWW"]["security_id"] is None
     assert (rows["ALPXW"]["security_id"], rows["ALPXW"]["share_class_figi"]) == ("BBG00ALPX001", "BBG00ALPX002")
     assert rows["AAC.WS"]["figi_source"] == "openfigi"
+
+
+def test_listings_resolution_check_flags_new_unresolved_listings_after_grace(tmp_path):
+    import pytest
+
+    from finance_flow.securities import ListingsResolutionCheckModel
+
+    listings = _listings_dataset(tmp_path)
+    # A new unresolved listing appears on the last two sessions; NOFIGI.WS is backlog from before the baseline.
+    for day in (date(2025, 1, 7), date(2025, 1, 8)):
+        frame = listings.read_frame(day)
+        extra = pl.DataFrame(
+            {
+                "ticker": ["FRESH"],
+                "name": ["Fresh Co"],
+                "type": ["CS"],
+                "primary_exchange": ["XNYS"],
+                "composite_figi": [None],
+                "share_class_figi": [None],
+                "security_id": [None],
+                "date": [day],
+            }
+        )
+        listings.write_frame(
+            day, pl.concat([frame, extra], how="diagonal_relaxed").with_columns(pl.lit(None, pl.String).alias("fill_status")), overwrite=True
+        )
+    check = ListingsResolutionCheckModel(listings=listings, baseline_date=date(2025, 1, 7), grace_sessions=2)
+
+    result = check(date(2025, 1, 8)).value
+
+    assert (result["unresolved_count"], result["status"]) == (1, "failed")
+    assert [row["ticker"] for row in result["overdue"]] == ["FRESH"]
+    assert check.model_copy(update={"grace_sessions": 3})(date(2025, 1, 8)).value["status"] == "ok"
+    assert check.model_copy(update={"ignore_types": ["CS"]})(date(2025, 1, 8)).value["unresolved_count"] == 0
+    backlog = ListingsResolutionCheckModel(listings=listings, baseline_date=date(2025, 1, 7), max_unresolved=0)
+    assert backlog(date(2025, 1, 6)).value["unresolved_count"] == 1
+    with pytest.raises(RuntimeError, match="FRESH"):
+        check.model_copy(update={"fail_on_unresolved": True})(date(2025, 1, 8))
+    with pytest.raises(RuntimeError, match="exceed 0"):
+        backlog.model_copy(update={"fail_on_unresolved": True})(date(2025, 1, 6))
