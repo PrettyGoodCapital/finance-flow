@@ -274,43 +274,50 @@ class SecurityListingsModel(CallableModel):
         return GenericResult(value={**plan, "status": "written", **lineage["quality"], "output_writes": writes})
 
 
-def symbol_history(listings: Any, as_of: date) -> Any:
+_SYMBOL_ATTRIBUTES = ("name", "type", "primary_exchange", "composite_figi", "share_class_figi")
+
+
+def symbol_history(listings: Any, as_of: date, attributes: Any = None) -> Any:
     """Collapse daily listings into ``(security_id, ticker, valid_from, valid_to)`` runs as of a date.
 
-    A run ends when a security's ticker changes or when it is missing from a session's listings. Each run carries the
-    latest name, type, and primary exchange seen in it, and ``listed`` is true when the run reaches ``as_of``.
+    A run ends when a security's ticker changes or when it is missing from a session's listings. ``listed`` is true when
+    the run reaches the last session. Runs are found from the identifier columns alone, dictionary encoded. When
+    ``attributes(day)`` is given, it returns that day's listings, and each run gets the name, type, primary exchange,
+    and FIGIs listed on its last day, read one day at a time so memory stays small over long histories.
     """
     import polars as pl
 
-    frame = listings.filter(pl.col("security_id").is_not_null() & (pl.col("date") <= as_of))
-    sessions = frame.select(pl.col("date").unique().sort()).with_row_index("session")
-    ordered = frame.join(sessions, on="date").sort("security_id", "date", "ticker")
-    runs = ordered.with_columns(
-        (
-            (pl.col("ticker") != pl.col("ticker").shift(1).over("security_id"))
-            | (pl.col("session") - pl.col("session").shift(1).over("security_id") > 1)
-        )
-        .fill_null(True)
-        .cum_sum()
-        .over("security_id")
-        .alias("run")
+    keys = (
+        listings.filter(pl.col("security_id").is_not_null() & (pl.col("date") <= as_of))
+        .select(pl.col("security_id").cast(pl.Categorical), pl.col("ticker").cast(pl.Categorical), "date")
+        .collect(engine="streaming")
     )
-    last_session = sessions.select(pl.col("date").max()).collect().item()
+    if keys.is_empty():
+        return pl.LazyFrame(schema={"security_id": pl.String, "ticker": pl.String, "valid_from": pl.Date, "valid_to": pl.Date, "listed": pl.Boolean})
+    last_session = keys["date"].max()
+    keys = keys.with_columns(pl.col("date").rank("dense").cast(pl.UInt32).alias("session")).sort("security_id", "date", "ticker")
+    new_run = (pl.col("ticker") != pl.col("ticker").shift(1).over("security_id")) | (
+        pl.col("session") - pl.col("session").shift(1).over("security_id") > 1
+    )
+    runs = (
+        keys.with_columns(new_run.fill_null(True).cum_sum().over("security_id").alias("run"))
+        .group_by("security_id", "run")
+        .agg(pl.col("ticker").first(), pl.col("date").min().alias("valid_from"), pl.col("date").max().alias("valid_to"))
+        .select(pl.col("security_id").cast(pl.String), pl.col("ticker").cast(pl.String), "valid_from", "valid_to")
+    )
+    del keys
+    if attributes is not None:
+        rows = []
+        for day, ends in runs.select("security_id", "ticker", "valid_to").partition_by("valid_to", as_dict=True).items():
+            frame = attributes(day[0]).select("security_id", "ticker", *_SYMBOL_ATTRIBUTES)
+            rows.append(
+                frame.join(ends.select("security_id", "ticker"), on=["security_id", "ticker"], how="semi")
+                .unique(["security_id", "ticker"])
+                .with_columns(pl.lit(day[0]).alias("valid_to"))
+            )
+        runs = runs.join(pl.concat(rows, how="diagonal_relaxed"), on=["security_id", "ticker", "valid_to"], how="left")
     return (
-        runs.group_by("security_id", "run")
-        .agg(
-            pl.col("ticker").first(),
-            pl.col("date").min().alias("valid_from"),
-            pl.col("date").max().alias("valid_to"),
-            pl.col("name").last(),
-            pl.col("type").last(),
-            pl.col("primary_exchange").last(),
-            pl.col("composite_figi").last(),
-            pl.col("share_class_figi").last(),
-        )
-        .with_columns((pl.col("valid_to") == last_session).alias("listed"), pl.lit(as_of).alias("date"))
-        .drop("run")
-        .sort("security_id", "valid_from")
+        runs.with_columns((pl.col("valid_to") == last_session).alias("listed"), pl.lit(as_of).alias("date")).sort("security_id", "valid_from").lazy()
     )
 
 
@@ -352,7 +359,7 @@ class SymbolHistoryModel(CallableModel):
         if not self.listings.exists(context.date):
             return GenericResult(value={**plan, "status": "no_listings"})
         start = self.listings.first_date or context.date
-        history = symbol_history(self.listings.scan(start, context.date), context.date).collect()
+        history = symbol_history(self.listings.scan(start, context.date), context.date, attributes=self.listings.read_frame).collect()
         quality = {
             "row_count": history.height,
             "security_count": history["security_id"].n_unique(),
@@ -396,7 +403,7 @@ class SecurityMaster(BaseModel):
         if stored:
             frame = self.symbol_history.scan(stored[0], stored[0])
         else:
-            frame = symbol_history(self.listings.scan(self.listings.first_date or as_of, as_of), as_of)
+            frame = symbol_history(self.listings.scan(self.listings.first_date or as_of, as_of), as_of, attributes=self.listings.read_frame)
         return frame.filter(pl.col("security_id").is_in(security_ids)) if security_ids is not None else frame
 
     def attach_security_id(self, frame: Any, start: date, end: date, date_col: str = "date", ticker_col: str = "ticker") -> Any:

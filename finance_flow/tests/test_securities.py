@@ -159,6 +159,8 @@ def test_symbol_history_splits_runs_on_ticker_changes_and_gaps(tmp_path):
         ("FIGI2", "STAY", date(2025, 1, 8), date(2025, 1, 8), True),
         ("FIGI3", "GONE", date(2025, 1, 6), date(2025, 1, 7), False),
     ]
+    with_attributes = symbol_history(listings.scan(date(2025, 1, 6), date(2025, 1, 8)), date(2025, 1, 8), attributes=listings.read_frame).collect()
+    assert with_attributes.select("ticker", "name").rows()[:2] == [("OLD", "OLD Inc"), ("NEW", "NEW Inc")]
     as_of_first = symbol_history(listings.scan(date(2025, 1, 6), date(2025, 1, 8)), date(2025, 1, 6)).collect()
     assert as_of_first.select("ticker", "listed").sort("ticker").rows() == [("GONE", True), ("OLD", True), ("STAY", True)]
 
