@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from .adjustments import *
     from .bars import *
     from .fanout import *
+    from .identifiers import *
     from .lineage import *
     from .massive_flat_files import *
     from .securities import *
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
 
 # Exports resolve on first access, importing only the submodule that defines them, so locating
 # the config package for Hydra and using a single model do not import every module and dependency.
-_SUBMODULES = ("adjustments", "bars", "fanout", "lineage", "massive_flat_files", "securities", "tasks")
+_SUBMODULES = ("adjustments", "bars", "fanout", "identifiers", "lineage", "massive_flat_files", "securities", "tasks")
 _EXPORTS: dict[str, str] | None = None
 
 
