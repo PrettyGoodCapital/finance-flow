@@ -216,7 +216,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
     input_key_template: str = "massive/stocks/s3/day-aggs/{year}/{month}/{date}.csv.gz"
     output_key_template: str = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.parquet"
     sidecar_key_template: str = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.metadata.json"
-    overwrite: bool = False
+    overwrite_output: bool = False
     overwrite_sidecar: bool = False
     explain: bool = False
 
@@ -295,7 +295,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
         return ArtifactMaterializeContext(
             key=self.input_key(context),
             path=self.source_path(context),
-            overwrite=self.overwrite,
+            overwrite=self.overwrite_output,
             dry_run=context.dry_run or self.explain if dry_run is None else dry_run,
             metadata={"date": context.date.isoformat(), "dataset": "massive-stocks-day-aggs-raw"},
         )
@@ -326,7 +326,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
                 output_path=output_path,
                 session_date=context.date,
                 source_key=input_key,
-                overwrite=self.overwrite,
+                overwrite=self.overwrite_output,
                 dry_run=dry_run,
             )
         )
@@ -337,7 +337,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
                 media_type="application/vnd.apache.parquet",
                 dataset="massive-stocks-bars-daily",
                 stage="transform",
-                overwrite=self.overwrite,
+                overwrite=self.overwrite_output,
                 dry_run=dry_run,
                 metadata={**metadata, "row_count": transform.row_count} if transform.row_count is not None else metadata,
             )
@@ -351,7 +351,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
                     media_type="application/vnd.apache.parquet",
                     dataset="massive-stocks-bars-daily",
                     stage="load",
-                    overwrite=self.overwrite,
+                    overwrite=self.overwrite_output,
                     dry_run=dry_run,
                     metadata={**metadata, "row_count": transform.row_count} if transform.row_count is not None else metadata,
                 )
@@ -364,7 +364,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
         unverifiable = transform.status == "transformed" and "exists" in parquet_statuses
         sidecar_local_write = sidecar_backup_write = None
         if not unverifiable:
-            overwrite_sidecar = self.overwrite or self.overwrite_sidecar
+            overwrite_sidecar = self.overwrite_output or self.overwrite_sidecar
             if not dry_run and (overwrite_sidecar or transform.status == "transformed" or not sidecar_path.exists()):
                 self._write_sidecar(sidecar_path, self._sidecar(context, output_key, output_path, materialization, transform))
             sidecar_context = {
