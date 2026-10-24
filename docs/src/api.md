@@ -87,9 +87,12 @@ master.filter(pl.col("type") == "CS").collect()
 
 # Point-in-time lookups; a weekend or holiday resolves to the session before it
 securities = SecurityMaster.from_root("/data")
-securities.lookup(["META"], as_of=date(2021, 10, 27)).collect()  # empty: Meta traded as FB until 2022-06-09
-securities.lookup(["FB"], as_of=date(2021, 10, 27)).select("ticker", "security_id").collect()
-securities.history(["BBG000MM2P62"], as_of=date(2024, 6, 3)).collect()  # FB, then META
+# Tickers are reused, so the same symbol can be a different security on another date
+securities.lookup(["FB"], as_of=date(2021, 10, 27)).collect()    # Facebook, BBG000MM2P62
+securities.lookup(["META"], as_of=date(2021, 10, 27)).collect()  # Roundhill Ball Metaverse ETF
+securities.lookup(["META"], as_of=date(2024, 6, 3)).collect()    # Meta Platforms, BBG000MM2P62
+securities.lookup(["FB"], as_of=date(2026, 10, 23)).collect()    # ProShares S&P 500 Dynamic Buffer ETF
+securities.history(["BBG000MM2P62"], as_of=date(2024, 6, 3)).collect()  # FB until 2022-06-09, then META
 
 # Key ticker-based data, such as bars, by security for each row's own date
 bars = pl.scan_parquet("/data/bars/*.parquet")
