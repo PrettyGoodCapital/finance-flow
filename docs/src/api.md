@@ -71,8 +71,8 @@ from finance_flow import DailyBar
 
 `load_security_master(root, as_of=None, active_only=False)` returns a Polars `LazyFrame` with one row per security known
 on `as_of`: its ticker at that time, name, type, primary exchange, composite and share-class FIGIs, the ticker's
-`valid_from` and `valid_to`, and whether it was still listed. `root` is the directory holding the curated
-`curated/securities/listings/v1/...` and `curated/securities/symbol-history/v1/...` partitions.
+`valid_from` and `valid_to`, and whether it was still listed. `root` is the directory holding the curated listings, symbol history, daily bars, and adjustment
+factor partitions. The master also carries each security's SEC `cik`.
 
 ```python
 from datetime import date
@@ -93,6 +93,12 @@ securities.lookup(["META"], as_of=date(2021, 10, 27)).collect()  # Roundhill Bal
 securities.lookup(["META"], as_of=date(2024, 6, 3)).collect()    # Meta Platforms, BBG000MM2P62
 securities.lookup(["FB"], as_of=date(2026, 10, 23)).collect()    # ProShares S&P 500 Dynamic Buffer ETF
 securities.history(["BBG000MM2P62"], as_of=date(2024, 6, 3)).collect()  # FB until 2022-06-09, then META
+
+# Daily prices by stable ID: one series across FB -> META, adjusted for splits and dividends known today
+securities.prices(["BBG000MM2P62"], start=date(2022, 5, 16), end=date(2022, 6, 15)).collect()
+# As traded, or adjusted only with events known by a date
+securities.prices(["BBG000MM2P62"], start=date(2022, 5, 16), end=date(2022, 6, 15), adjust="none")
+securities.prices(["BBG009S39JX6"], start=date(2022, 5, 16), end=date(2022, 6, 15), adjust="split", as_of=date(2022, 6, 15))
 
 # Key ticker-based data, such as bars, by security for each row's own date
 bars = pl.scan_parquet("/data/bars/*.parquet")
