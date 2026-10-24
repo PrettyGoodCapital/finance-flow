@@ -678,11 +678,13 @@ class SecurityMasterReportModel(CallableModel):
             return GenericResult(value={**plan, "status": "no_session"})
         master = self.master.master(as_of=context.date).collect(engine="streaming")
         listed = master.filter(pl.col("listed"))
-        resolved = (
-            self.master.lookup(self.tickers, context.date).select("ticker", "security_id", "name", "type").collect()
-            if self.tickers
-            else pl.DataFrame()
-        )
+        if self.tickers and self.master.identifiers_as_of(context.date) is not None:
+            columns = ["ticker", "security_id", "name", "type", "ric", "bloomberg_ticker", "cusip", "isin", "cik", "company_name"]
+            resolved = self.master.resolve(self.tickers, by="ticker", as_of=context.date).select(columns).collect()
+        elif self.tickers:
+            resolved = self.master.lookup(self.tickers, context.date).select("ticker", "security_id", "name", "type").collect()
+        else:
+            resolved = pl.DataFrame()
         ids = [value for value in (resolved["security_id"].to_list() if resolved.height else []) if value]
         histories = (
             self.master.history(ids, as_of=context.date)
