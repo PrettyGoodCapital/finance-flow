@@ -2,12 +2,15 @@ import gzip
 import json
 import logging
 import re
+from hashlib import sha256
 from datetime import date, timedelta
 from typing import Any
 
 from ccflow import BaseModel, CallableModel, ContextType, DateContext, DateRangeContext, Flow, GenericResult, GraphDepList
 from ccflow_etl import DatasetDefinition
 from pydantic import Field
+
+from .lineage import source_identity, transform_provenance
 
 __all__ = (
     "ListingsCoverageModel",
@@ -196,19 +199,22 @@ class SecurityListingsModel(CallableModel):
             fills[source] = rows
         return fills
 
+    def _manual_figis_text(self) -> str:
+        from importlib.resources import files
+
+        if ":" in self.manual_figis and not self.manual_figis.startswith("/"):
+            package, resource = self.manual_figis.split(":", 1)
+            return files(package).joinpath(resource).read_text()
+        with open(self.manual_figis) as handle:
+            return handle.read()
+
     def _manual_figis(self) -> dict[str, list[dict[str, Any]]]:
         if not self.manual_figis:
             return {}
         import csv
         import io
-        from importlib.resources import files
 
-        if ":" in self.manual_figis and not self.manual_figis.startswith("/"):
-            package, resource = self.manual_figis.split(":", 1)
-            text = files(package).joinpath(resource).read_text()
-        else:
-            with open(self.manual_figis) as handle:
-                text = handle.read()
+        text = self._manual_figis_text()
         rows: dict[str, list[dict[str, Any]]] = {}
         for row in csv.DictReader(io.StringIO(text)):
             row["valid_from"], row["valid_to"] = date.fromisoformat(row["valid_from"]), date.fromisoformat(row["valid_to"])
@@ -297,9 +303,10 @@ class SecurityListingsModel(CallableModel):
         fill_statuses = frame.filter(pl.col("fill_status").is_not_null()).group_by("fill_status").len().rows()
         lineage = {
             "sources": {
-                "snapshot": self.snapshot.uri(context.date),
-                **{source: dataset.uri(context.date) for source, dataset in self.fills.items()},
-                **({"carried_from": self.output.uri(carried_from)} if carried_from else {}),
+                "snapshot": source_identity(self.snapshot, context.date),
+                **{source: source_identity(dataset, context.date) for source, dataset in self.fills.items() if dataset.exists(context.date)},
+                **({"carried_from": source_identity(self.output, carried_from)} if carried_from else {}),
+                **({"manual_figis": {"path": self.manual_figis, "sha256": sha256(self._manual_figis_text().encode()).hexdigest()}} if self.manual_figis else {}),
             },
             "quality": {
                 "row_count": frame.height,
@@ -307,7 +314,7 @@ class SecurityListingsModel(CallableModel):
                 "figi_source_counts": {str(source): count for source, count in figi_sources},
                 "fill_status_counts": {str(status): count for status, count in fill_statuses},
             },
-            "transform": {"model": f"{type(self).__module__}.{type(self).__qualname__}", "min_name_overlap": self.min_name_overlap},
+            "transform": transform_provenance(self),
         }
         writes = self.output.write_frame(context.date, frame, lineage=lineage, overwrite=self.overwrite_output)
         return GenericResult(value={**plan, "status": "written", **lineage["quality"], "output_writes": writes})
@@ -405,7 +412,11 @@ class SymbolHistoryModel(CallableModel):
             "listed_count": int(history["listed"].sum()),
             "multi_ticker_security_count": int((history.group_by("security_id").len()["len"] > 1).sum()),
         }
-        lineage = {"sources": {"listings": self.listings.name, "start": start.isoformat(), "end": context.date.isoformat()}, "quality": quality}
+        lineage = {
+            "sources": {"listings": {"name": self.listings.name, "start": start.isoformat(), "end": context.date.isoformat(), "last": source_identity(self.listings, context.date)}},
+            "quality": quality,
+            "transform": transform_provenance(self),
+        }
         writes = self.output.write_frame(context.date, history, lineage=lineage, overwrite=self.overwrite_output)
         return GenericResult(value={**plan, "status": "written", **quality, "output_writes": writes})
 

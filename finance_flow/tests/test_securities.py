@@ -98,7 +98,10 @@ def test_security_listings_keep_massive_figis_and_fill_validated_matches(tmp_pat
     assert frame["date"].unique().to_list() == [DAY]
     assert sidecar["quality"]["missing_security_id_count"] == 4
     assert sidecar["quality"]["figi_source_counts"] == {"massive": 1, "openfigi": 1, "None": 4}
-    assert sidecar["sources"]["openfigi"].endswith("raw/openfigi/2025-01-06.jsonl.gz")
+    assert sidecar["sources"]["openfigi"]["uri"].endswith("raw/openfigi/2025-01-06.jsonl.gz")
+    assert sidecar["transform"]["model"] == "finance_flow.securities.SecurityListingsModel"
+    assert sidecar["transform"]["settings"]["min_name_overlap"] == 0.5
+    assert len(sidecar["transform"]["config_fingerprint"]) == 64
 
 
 def test_security_listings_explain_exists_and_missing_snapshot(tmp_path):
@@ -323,7 +326,7 @@ def test_security_listings_carry_identifier_fills_forward(tmp_path):
     )
     assert preferred(2)["security_id"] is None
     sidecar = json.loads((tmp_path / "store" / output.sidecar_key(DAY + timedelta(days=1))).read_text())
-    assert sidecar["sources"]["carried_from"].endswith("curated/listings/2025-01-06.parquet")
+    assert sidecar["sources"]["carried_from"]["uri"].endswith("curated/listings/2025-01-06.parquet")
 
 
 def test_listings_coverage_reports_identified_share_per_session(tmp_path):

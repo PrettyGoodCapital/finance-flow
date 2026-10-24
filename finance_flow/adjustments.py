@@ -6,6 +6,8 @@ from ccflow import BaseModel, CallableModel, ContextType, DateContext, Flow, Gen
 from ccflow_etl import DatasetDefinition
 from pydantic import Field
 
+from .lineage import source_identity, transform_provenance
+
 __all__ = (
     "FACTOR_SCHEMA",
     "AdjustedBars",
@@ -185,13 +187,12 @@ class AdjustmentFactorsModel(CallableModel):
         type_counts = {str(kind): count for kind, count in frame.group_by("event_type").len().rows()}
         lineage = {
             "sources": {
-                "splits": self.splits.uri(context.date),
-                "dividends": self.dividends.uri(context.date),
-                "listings": self.listings.name,
+                **{name: source_identity(dataset, context.date) for name, dataset in (("splits", self.splits), ("dividends", self.dividends)) if dataset.exists(context.date)},
+                "listings": source_identity(self.listings, context.date) if self.listings.exists(context.date) else self.listings.name,
                 "bars": self.bars.name,
             },
             "quality": {"row_count": frame.height, "status_counts": status_counts, "event_type_counts": type_counts},
-            "transform": {"model": f"{type(self).__module__}.{type(self).__qualname__}", "currency": self.currency},
+            "transform": transform_provenance(self),
         }
         writes = self.output.write_frame(context.date, frame, lineage=lineage, overwrite=self.overwrite_output)
         return GenericResult(value={**plan, "status": "written", **lineage["quality"], "output_writes": writes})
