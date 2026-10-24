@@ -5,7 +5,7 @@ import re
 from datetime import date, timedelta
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ccflow import BaseModel, CallableModel, ContextType, DateContext, DateRangeContext, Flow, GenericResult, GraphDepList
 from ccflow_etl import DatasetDefinition, LocalFileOutput
@@ -14,6 +14,8 @@ from pydantic import Field
 from .lineage import source_identity, transform_provenance
 
 __all__ = (
+    "ADJUSTMENT_FACTORS_KEY_TEMPLATE",
+    "DAILY_BARS_KEY_TEMPLATE",
     "LISTINGS_KEY_TEMPLATE",
     "SYMBOL_HISTORY_KEY_TEMPLATE",
     "ListingsCoverageModel",
@@ -329,7 +331,7 @@ class SecurityListingsModel(CallableModel):
         return GenericResult(value={**plan, "status": "written", **lineage["quality"], "output_writes": writes})
 
 
-_SYMBOL_ATTRIBUTES = ("name", "type", "primary_exchange", "composite_figi", "share_class_figi")
+_SYMBOL_ATTRIBUTES = ("name", "type", "primary_exchange", "composite_figi", "share_class_figi", "cik")
 
 
 def symbol_history(listings: Any, as_of: date, attributes: Any = None) -> Any:
@@ -364,7 +366,8 @@ def symbol_history(listings: Any, as_of: date, attributes: Any = None) -> Any:
     if attributes is not None:
         rows = []
         for day, ends in runs.select("security_id", "ticker", "valid_to").partition_by("valid_to", as_dict=True).items():
-            frame = attributes(day[0]).select("security_id", "ticker", *_SYMBOL_ATTRIBUTES)
+            frame = attributes(day[0])
+            frame = frame.select("security_id", "ticker", *[column for column in _SYMBOL_ATTRIBUTES if column in frame.columns])
             rows.append(
                 frame.join(ends.select("security_id", "ticker"), on=["security_id", "ticker"], how="semi")
                 .unique(["security_id", "ticker"])
@@ -439,6 +442,8 @@ class SymbolHistoryModel(CallableModel):
 
 LISTINGS_KEY_TEMPLATE = "curated/securities/listings/v1/{year}/{month}/{date}.parquet"
 SYMBOL_HISTORY_KEY_TEMPLATE = "curated/securities/symbol-history/v1/{year}/{month}/{date}.parquet"
+DAILY_BARS_KEY_TEMPLATE = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.parquet"
+ADJUSTMENT_FACTORS_KEY_TEMPLATE = "curated/securities/adjustment-factors/v1/{year}/{month}/{date}.parquet"
 _MASTER_COLUMNS = (
     "security_id",
     "ticker",
@@ -447,6 +452,7 @@ _MASTER_COLUMNS = (
     "primary_exchange",
     "composite_figi",
     "share_class_figi",
+    "cik",
     "valid_from",
     "valid_to",
     "listed",
@@ -462,6 +468,8 @@ class SecurityMaster(BaseModel):
 
     listings: DatasetDefinition
     symbol_history: DatasetDefinition
+    bars: DatasetDefinition | None = Field(default=None, description="Unadjusted daily bars keyed by ticker, for prices().")
+    factors: DatasetDefinition | None = Field(default=None, description="Split and dividend adjustment factors, for adjusted prices().")
     lookback_days: int = Field(default=10, ge=1, description="How far back to look for a session, or a stored symbol history, on or before a date.")
 
     @classmethod
@@ -470,6 +478,8 @@ class SecurityMaster(BaseModel):
         root: str | Path,
         listings_key_template: str = LISTINGS_KEY_TEMPLATE,
         symbol_history_key_template: str = SYMBOL_HISTORY_KEY_TEMPLATE,
+        bars_key_template: str = DAILY_BARS_KEY_TEMPLATE,
+        factors_key_template: str = ADJUSTMENT_FACTORS_KEY_TEMPLATE,
         first_date: date | None = None,
     ) -> "SecurityMaster":
         """A security master over curated datasets stored under a local directory.
@@ -482,9 +492,14 @@ class SecurityMaster(BaseModel):
         # The same directory as the local store makes scans lazy Parquet reads instead of eager loads.
         datasets = {
             name: DatasetDefinition(name=f"securities-{name}", key_template=template, store=store, local_store=store, first_date=first_date)
-            for name, template in (("listings", listings_key_template), ("symbol-history", symbol_history_key_template))
+            for name, template in (
+                ("listings", listings_key_template),
+                ("symbol-history", symbol_history_key_template),
+                ("bars", bars_key_template),
+                ("factors", factors_key_template),
+            )
         }
-        return cls(listings=datasets["listings"], symbol_history=datasets["symbol-history"])
+        return cls(listings=datasets["listings"], symbol_history=datasets["symbol-history"], bars=datasets["bars"], factors=datasets["factors"])
 
     def session(self, as_of: date) -> date | None:
         """The latest listings session on or before ``as_of``."""
@@ -536,6 +551,34 @@ class SecurityMaster(BaseModel):
         latest = history.sort("security_id", "valid_to", "valid_from").group_by("security_id", maintain_order=True).last().select(columns)
         return latest.filter(pl.col("listed")) if active_only else latest
 
+    def prices(
+        self,
+        security_ids: list[str],
+        start: date,
+        end: date,
+        adjust: Literal["total_return", "split", "none"] = "total_return",
+        as_of: date | None = None,
+    ) -> Any:
+        """Daily bars for securities by stable ID, across ticker changes; each row keeps the ticker it traded under that day.
+
+        ``adjust`` applies split and dividend factors known by ``as_of`` (all known when omitted), or leaves bars as
+        traded with ``"none"``.
+        """
+        import polars as pl
+
+        from .adjustments import AdjustedBars
+
+        if self.bars is None:
+            raise ValueError("SecurityMaster.prices needs a bars dataset.")
+        if adjust == "none":
+            listings = self.listings.scan(start, end).select("date", "ticker", "security_id")
+            frame = self.bars.scan(start, end).join(listings, on=["date", "ticker"], how="inner")
+        else:
+            if self.factors is None:
+                raise ValueError("Adjusted prices need a factors dataset.")
+            frame = AdjustedBars(bars=self.bars, factors=self.factors, listings=self.listings).scan(start, end, mode=adjust, as_of=as_of)
+        return frame.filter(pl.col("security_id").is_in(security_ids)).sort("security_id", "date")
+
     def attach_security_id(self, frame: Any, start: date, end: date, date_col: str = "date", ticker_col: str = "ticker") -> Any:
         """Join ticker-keyed rows to the listings of their own date, adding ``security_id`` and FIGIs."""
         import polars as pl
@@ -572,6 +615,7 @@ class SecurityMasterReportModel(CallableModel):
 
     master: SecurityMaster
     tickers: list[str] = Field(default_factory=list, description="Tickers to resolve as of the date, with their securities' ticker histories.")
+    price_days: int = Field(default=30, ge=1, description="Days of adjusted prices to summarize per resolved security, ending on the date.")
     explain: bool = False
     logger_name: str = __name__
 
@@ -609,6 +653,20 @@ class SecurityMasterReportModel(CallableModel):
             if ids
             else pl.DataFrame()
         )
+        prices = []
+        if ids and self.master.bars is not None and self.master.factors is not None:
+            frame = self.master.prices(ids, context.date - timedelta(days=self.price_days), context.date).collect()
+            for (security_id,), rows in frame.group_by("security_id", maintain_order=True):
+                first, last = rows.row(0, named=True), rows.row(-1, named=True)
+                prices.append(
+                    {
+                        "security_id": security_id,
+                        "rows": rows.height,
+                        "tickers": rows["ticker"].unique(maintain_order=True).to_list(),
+                        "first": [first["date"].isoformat(), first["ticker"], round(first["close"], 4)],
+                        "last": [last["date"].isoformat(), last["ticker"], round(last["close"], 4)],
+                    }
+                )
         value = {
             **plan,
             "status": "ok",
@@ -620,6 +678,7 @@ class SecurityMasterReportModel(CallableModel):
             "histories": [
                 {**row, "valid_from": row["valid_from"].isoformat(), "valid_to": row["valid_to"].isoformat()} for row in histories.to_dicts()
             ],
+            "prices": prices,
         }
         logging.getLogger(self.logger_name).info(
             "security master as of %s (session %s): %d securities, %d listed", value["as_of"], value["session"], master.height, listed.height

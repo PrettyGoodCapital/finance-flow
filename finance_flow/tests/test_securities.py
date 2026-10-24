@@ -410,3 +410,39 @@ def test_security_master_report_resolves_tickers_as_of_a_date(tmp_path):
     assert [(row["ticker"], row["valid_to"]) for row in report["histories"]] == [("OLD", "2025-01-06"), ("NEW", "2025-01-08")]
     assert model(date(2025, 1, 1)).value["status"] == "no_session"
     assert model.model_copy(update={"explain": True})(date(2025, 1, 8)).value["status"] == "planned"
+
+
+def test_security_master_prices_follow_a_security_across_ticker_changes(tmp_path):
+    from finance_flow.securities import SecurityMaster
+
+    listings = _listings_dataset(tmp_path)
+    store = LocalFileOutput(path=tmp_path / "store")
+    bars = DatasetDefinition(name="bars", key_template="curated/bars/{date}.parquet", store=store)
+    factors = DatasetDefinition(name="factors", key_template="curated/factors/{date}.parquet", store=store)
+    for day, rows in {
+        date(2025, 1, 6): [("OLD", 100.0), ("STAY", 10.0)],
+        date(2025, 1, 7): [("NEW", 51.0), ("GONE", 5.0)],
+        date(2025, 1, 8): [("NEW", 52.0), ("STAY", 11.0)],
+    }.items():
+        bars.write_frame(
+            day,
+            pl.DataFrame({"date": [day] * len(rows), "ticker": [t for t, _ in rows], "close": [c for _, c in rows], "volume": [1000.0] * len(rows)}),
+        )
+    factors.write_frame(
+        date(2025, 1, 7),
+        pl.DataFrame(
+            {"date": [date(2025, 1, 7)], "ticker": ["NEW"], "security_id": ["FIGI1"], "split_factor": [0.5], "dividend_factor": [None]},
+            schema_overrides={"dividend_factor": pl.Float64},
+        ),
+    )
+    master = SecurityMaster(listings=listings, symbol_history=listings, bars=bars, factors=factors)
+
+    raw = master.prices(["FIGI1"], date(2025, 1, 6), date(2025, 1, 8), adjust="none").collect()
+    adjusted = master.prices(["FIGI1"], date(2025, 1, 6), date(2025, 1, 8), adjust="split").collect()
+
+    assert raw.select("date", "ticker", "close").rows() == [
+        (date(2025, 1, 6), "OLD", 100.0),
+        (date(2025, 1, 7), "NEW", 51.0),
+        (date(2025, 1, 8), "NEW", 52.0),
+    ]
+    assert adjusted.select("ticker", "close", "volume").rows() == [("OLD", 50.0, 2000.0), ("NEW", 51.0, 1000.0), ("NEW", 52.0, 1000.0)]
