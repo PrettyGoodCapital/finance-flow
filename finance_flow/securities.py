@@ -2,8 +2,8 @@ import gzip
 import json
 import logging
 import re
-from hashlib import sha256
 from datetime import date, timedelta
+from hashlib import sha256
 from typing import Any
 
 from ccflow import BaseModel, CallableModel, ContextType, DateContext, DateRangeContext, Flow, GenericResult, GraphDepList
@@ -306,7 +306,11 @@ class SecurityListingsModel(CallableModel):
                 "snapshot": source_identity(self.snapshot, context.date),
                 **{source: source_identity(dataset, context.date) for source, dataset in self.fills.items() if dataset.exists(context.date)},
                 **({"carried_from": source_identity(self.output, carried_from)} if carried_from else {}),
-                **({"manual_figis": {"path": self.manual_figis, "sha256": sha256(self._manual_figis_text().encode()).hexdigest()}} if self.manual_figis else {}),
+                **(
+                    {"manual_figis": {"path": self.manual_figis, "sha256": sha256(self._manual_figis_text().encode()).hexdigest()}}
+                    if self.manual_figis
+                    else {}
+                ),
             },
             "quality": {
                 "row_count": frame.height,
@@ -413,7 +417,14 @@ class SymbolHistoryModel(CallableModel):
             "multi_ticker_security_count": int((history.group_by("security_id").len()["len"] > 1).sum()),
         }
         lineage = {
-            "sources": {"listings": {"name": self.listings.name, "start": start.isoformat(), "end": context.date.isoformat(), "last": source_identity(self.listings, context.date)}},
+            "sources": {
+                "listings": {
+                    "name": self.listings.name,
+                    "start": start.isoformat(),
+                    "end": context.date.isoformat(),
+                    "last": source_identity(self.listings, context.date),
+                }
+            },
             "quality": quality,
             "transform": transform_provenance(self),
         }

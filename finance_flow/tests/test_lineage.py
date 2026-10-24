@@ -17,7 +17,11 @@ def test_source_identity_records_what_the_store_reports(tmp_path):
     identity = source_identity(dataset, date(2025, 1, 6))
 
     assert identity["uri"].endswith("raw/2025-01-06.json")
-    assert {name: identity[name] for name in ("etag", "size", "last_modified")} == {"etag": '"abc"', "size": 12, "last_modified": "2025-01-06T00:00:00+00:00"}
+    assert {name: identity[name] for name in ("etag", "size", "last_modified")} == {
+        "etag": '"abc"',
+        "size": 12,
+        "last_modified": "2025-01-06T00:00:00+00:00",
+    }
     assert "version_id" not in identity and "bucket" not in identity
 
 

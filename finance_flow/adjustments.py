@@ -187,7 +187,11 @@ class AdjustmentFactorsModel(CallableModel):
         type_counts = {str(kind): count for kind, count in frame.group_by("event_type").len().rows()}
         lineage = {
             "sources": {
-                **{name: source_identity(dataset, context.date) for name, dataset in (("splits", self.splits), ("dividends", self.dividends)) if dataset.exists(context.date)},
+                **{
+                    name: source_identity(dataset, context.date)
+                    for name, dataset in (("splits", self.splits), ("dividends", self.dividends))
+                    if dataset.exists(context.date)
+                },
                 "listings": source_identity(self.listings, context.date) if self.listings.exists(context.date) else self.listings.name,
                 "bars": self.bars.name,
             },
