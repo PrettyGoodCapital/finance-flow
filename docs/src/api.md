@@ -67,6 +67,39 @@ from finance_flow import DailyBar
 
 `DailyBar` is the current OHLCV record schema used by normalization workflows.
 
+## Security Master
+
+`load_security_master(root, as_of=None, active_only=False)` returns a Polars `LazyFrame` with one row per security known
+on `as_of`: its ticker at that time, name, type, primary exchange, composite and share-class FIGIs, the ticker's
+`valid_from` and `valid_to`, and whether it was still listed. `root` is the directory holding the curated
+`curated/securities/listings/v1/...` and `curated/securities/symbol-history/v1/...` partitions.
+
+```python
+from datetime import date
+
+import polars as pl
+
+from finance_flow import SecurityMaster, load_security_master
+
+# Every security listed on 2024-06-03, with the ticker it traded under that day
+master = load_security_master("/data", as_of=date(2024, 6, 3), active_only=True)
+master.filter(pl.col("type") == "CS").collect()
+
+# Point-in-time lookups; a weekend or holiday resolves to the session before it
+securities = SecurityMaster.from_root("/data")
+securities.lookup(["META"], as_of=date(2021, 10, 27)).collect()  # empty: Meta traded as FB until 2022-06-09
+securities.lookup(["FB"], as_of=date(2021, 10, 27)).select("ticker", "security_id").collect()
+securities.history(["BBG000MM2P62"], as_of=date(2024, 6, 3)).collect()  # FB, then META
+
+# Key ticker-based data, such as bars, by security for each row's own date
+bars = pl.scan_parquet("/data/bars/*.parquet")
+securities.attach_security_id(bars, start=date(2024, 1, 2), end=date(2024, 6, 28))
+```
+
+Everything is computed from data known on `as_of`, so delisted securities keep their last ticker and later ticker
+reuse does not leak backwards. Histories are read from the stored symbol history for the nearest date on or before
+`as_of`, or computed from the listings when none is stored.
+
 ## Normalization
 
 ```python

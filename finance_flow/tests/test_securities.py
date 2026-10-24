@@ -344,3 +344,69 @@ def test_listings_coverage_reports_identified_share_per_session(tmp_path):
     assert result["sessions"][0] == {"date": "2025-01-06", "listings": 4, "unresolved": 1}
     assert (result["last_session"], result["last_session_unresolved"]) == ("2025-01-08", [])
     assert model.model_copy(update={"explain": True})(context).value["status"] == "planned"
+
+
+def test_load_security_master_resolves_securities_as_of_a_date(tmp_path):
+    from finance_flow.securities import LISTINGS_KEY_TEMPLATE, SYMBOL_HISTORY_KEY_TEMPLATE, SecurityMaster, SymbolHistoryModel, load_security_master
+
+    source = _listings_dataset(tmp_path / "source")
+    store = LocalFileOutput(path=tmp_path / "data")
+    listings = DatasetDefinition(name="listings", key_template=LISTINGS_KEY_TEMPLATE, store=store)
+    for day in (date(2025, 1, 6), date(2025, 1, 7), date(2025, 1, 8)):
+        listings.write_frame(day, source.read_frame(day))
+
+    def master(as_of, **kwargs):
+        return (
+            load_security_master(tmp_path / "data", as_of=as_of, **kwargs)
+            .collect()
+            .sort("security_id")
+            .select("security_id", "ticker", "listed")
+            .rows()
+        )
+
+    assert master(date(2025, 1, 6)) == [("FIGI1", "OLD", True), ("FIGI2", "STAY", True), ("FIGI3", "GONE", True)]
+    assert master(date(2025, 1, 8)) == [("FIGI1", "NEW", True), ("FIGI2", "STAY", True), ("FIGI3", "GONE", False)]
+    assert master(date(2025, 1, 11), active_only=True) == [("FIGI1", "NEW", True), ("FIGI2", "STAY", True)]
+
+    securities = SecurityMaster.from_root(tmp_path / "data")
+    assert securities.listings.first_date == date(2025, 1, 6)
+    # Saturday resolves to Wednesday's session.
+    assert securities.session(date(2025, 1, 11)) == date(2025, 1, 8)
+    assert securities.lookup(["NEW"], date(2025, 1, 11)).collect()["security_id"].to_list() == ["FIGI1"]
+    assert securities.lookup(["NEW"], date(2025, 1, 6)).collect().is_empty()
+
+    SymbolHistoryModel(listings=securities.listings, output=DatasetDefinition(name="h", key_template=SYMBOL_HISTORY_KEY_TEMPLATE, store=store))(
+        date(2025, 1, 8)
+    )
+    stored = securities.master(date(2025, 1, 8)).collect().sort("security_id")
+    assert stored.select("security_id", "ticker", "listed").rows() == master(date(2025, 1, 8))
+    assert stored.columns == [
+        "security_id",
+        "ticker",
+        "name",
+        "type",
+        "primary_exchange",
+        "composite_figi",
+        "share_class_figi",
+        "valid_from",
+        "valid_to",
+        "listed",
+    ]
+
+
+def test_security_master_report_resolves_tickers_as_of_a_date(tmp_path):
+    from finance_flow.securities import SecurityMaster, SecurityMasterReportModel
+
+    listings = _listings_dataset(tmp_path)
+    history = DatasetDefinition(
+        name="symbol-history", key_template="curated/symbol-history/{date}.parquet", store=LocalFileOutput(path=tmp_path / "store")
+    )
+    model = SecurityMasterReportModel(master=SecurityMaster(listings=listings, symbol_history=history), tickers=["NEW", "OLD"])
+
+    report = model(date(2025, 1, 11)).value
+
+    assert (report["session"], report["security_count"], report["listed_count"]) == ("2025-01-08", 3, 2)
+    assert [row["ticker"] for row in report["resolved"]] == ["NEW"]
+    assert [(row["ticker"], row["valid_to"]) for row in report["histories"]] == [("OLD", "2025-01-06"), ("NEW", "2025-01-08")]
+    assert model(date(2025, 1, 1)).value["status"] == "no_session"
+    assert model.model_copy(update={"explain": True})(date(2025, 1, 8)).value["status"] == "planned"

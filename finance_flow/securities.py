@@ -4,21 +4,26 @@ import logging
 import re
 from datetime import date, timedelta
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
 from ccflow import BaseModel, CallableModel, ContextType, DateContext, DateRangeContext, Flow, GenericResult, GraphDepList
-from ccflow_etl import DatasetDefinition
+from ccflow_etl import DatasetDefinition, LocalFileOutput
 from pydantic import Field
 
 from .lineage import source_identity, transform_provenance
 
 __all__ = (
+    "LISTINGS_KEY_TEMPLATE",
+    "SYMBOL_HISTORY_KEY_TEMPLATE",
     "ListingsCoverageModel",
     "ListingsResolutionCheckModel",
     "SecurityListingsModel",
     "SecurityMaster",
+    "SecurityMasterReportModel",
     "SymbolHistoryModel",
     "figi_fill_status",
+    "load_security_master",
     "name_tokens",
     "symbol_history",
 )
@@ -432,18 +437,69 @@ class SymbolHistoryModel(CallableModel):
         return GenericResult(value={**plan, "status": "written", **quality, "output_writes": writes})
 
 
+LISTINGS_KEY_TEMPLATE = "curated/securities/listings/v1/{year}/{month}/{date}.parquet"
+SYMBOL_HISTORY_KEY_TEMPLATE = "curated/securities/symbol-history/v1/{year}/{month}/{date}.parquet"
+_MASTER_COLUMNS = (
+    "security_id",
+    "ticker",
+    "name",
+    "type",
+    "primary_exchange",
+    "composite_figi",
+    "share_class_figi",
+    "valid_from",
+    "valid_to",
+    "listed",
+)
+
+
 class SecurityMaster(BaseModel):
-    """Point-in-time security lookups over the listings and symbol history datasets, returned as lazy frames."""
+    """Point-in-time security lookups over the listings and symbol history datasets, returned as lazy frames.
+
+    Every lookup is as of a date: it sees only listings up to that date, and a date without a session (a weekend or
+    holiday) resolves to the latest session before it.
+    """
 
     listings: DatasetDefinition
     symbol_history: DatasetDefinition
-    lookback_days: int = Field(default=10, ge=1, description="How far back to look for a stored symbol history on or before a date.")
+    lookback_days: int = Field(default=10, ge=1, description="How far back to look for a session, or a stored symbol history, on or before a date.")
+
+    @classmethod
+    def from_root(
+        cls,
+        root: str | Path,
+        listings_key_template: str = LISTINGS_KEY_TEMPLATE,
+        symbol_history_key_template: str = SYMBOL_HISTORY_KEY_TEMPLATE,
+        first_date: date | None = None,
+    ) -> "SecurityMaster":
+        """A security master over curated datasets stored under a local directory.
+
+        ``first_date``, where computed histories start, defaults to the date of the earliest listings partition.
+        """
+        store = LocalFileOutput(path=Path(root))
+        if first_date is None:
+            first_date = _earliest_partition(Path(root) / listings_key_template.split("{", 1)[0])
+        # The same directory as the local store makes scans lazy Parquet reads instead of eager loads.
+        datasets = {
+            name: DatasetDefinition(name=f"securities-{name}", key_template=template, store=store, local_store=store, first_date=first_date)
+            for name, template in (("listings", listings_key_template), ("symbol-history", symbol_history_key_template))
+        }
+        return cls(listings=datasets["listings"], symbol_history=datasets["symbol-history"])
+
+    def session(self, as_of: date) -> date | None:
+        """The latest listings session on or before ``as_of``."""
+        sessions = self.listings.partitions(as_of - timedelta(days=self.lookback_days), as_of)
+        return next((value for value in reversed(sessions) if self.listings.exists(value)), None)
 
     def listings_as_of(self, as_of: date) -> Any:
-        return self.listings.scan(as_of, as_of)
+        """The listings of the latest session on or before ``as_of``."""
+        import polars as pl
+
+        session = self.session(as_of)
+        return self.listings.scan(session, session) if session is not None else pl.LazyFrame()
 
     def lookup(self, tickers: list[str], as_of: date) -> Any:
-        """Securities listed under ``tickers`` on ``as_of``."""
+        """Securities listed under ``tickers`` as of ``as_of``."""
         import polars as pl
 
         return self.listings_as_of(as_of).filter(pl.col("ticker").is_in(tickers))
@@ -467,6 +523,19 @@ class SecurityMaster(BaseModel):
             frame = symbol_history(self.listings.scan(self.listings.first_date or as_of, as_of), as_of, attributes=self.listings.read_frame)
         return frame.filter(pl.col("security_id").is_in(security_ids)) if security_ids is not None else frame
 
+    def master(self, as_of: date | None = None, active_only: bool = False) -> Any:
+        """One row per security known on ``as_of``: its latest ticker run and that run's attributes.
+
+        ``valid_from`` and ``valid_to`` bound the run, and ``listed`` is true when the security was listed on the last
+        session on or before ``as_of``. ``active_only`` keeps listed securities only.
+        """
+        import polars as pl
+
+        history = self.history(as_of=as_of)
+        columns = [column for column in _MASTER_COLUMNS if column in history.collect_schema().names()]
+        latest = history.sort("security_id", "valid_to", "valid_from").group_by("security_id", maintain_order=True).last().select(columns)
+        return latest.filter(pl.col("listed")) if active_only else latest
+
     def attach_security_id(self, frame: Any, start: date, end: date, date_col: str = "date", ticker_col: str = "ticker") -> Any:
         """Join ticker-keyed rows to the listings of their own date, adding ``security_id`` and FIGIs."""
         import polars as pl
@@ -475,6 +544,87 @@ class SecurityMaster(BaseModel):
             pl.col("date").alias(date_col), pl.col("ticker").alias(ticker_col), "security_id", "composite_figi", "share_class_figi"
         )
         return frame.join(listings, on=[date_col, ticker_col], how="left")
+
+
+def _earliest_partition(directory: Path) -> date | None:
+    """The earliest date among files named ``<date>.parquet`` under ``directory``."""
+    dates = []
+    for path in directory.rglob("*.parquet") if directory.exists() else []:
+        try:
+            dates.append(date.fromisoformat(path.stem))
+        except ValueError:
+            continue
+    return min(dates, default=None)
+
+
+def load_security_master(root: str | Path, as_of: date | None = None, active_only: bool = False) -> Any:
+    """Load the security master as of a date from curated datasets under ``root``, as a Polars LazyFrame.
+
+    One row per security known on ``as_of`` (today when omitted) with its ticker at that time, name, type, primary
+    exchange, FIGIs, the ticker's ``valid_from``/``valid_to``, and whether it was still listed. For example,
+    ``load_security_master("/var/lib/airflow/data", as_of=date(2024, 6, 3), active_only=True)``.
+    """
+    return SecurityMaster.from_root(root).master(as_of=as_of, active_only=active_only)
+
+
+class SecurityMasterReportModel(CallableModel):
+    """Summarize the security master as of a date and resolve a few tickers against it, for checking point-in-time lookups."""
+
+    master: SecurityMaster
+    tickers: list[str] = Field(default_factory=list, description="Tickers to resolve as of the date, with their securities' ticker histories.")
+    explain: bool = False
+    logger_name: str = __name__
+
+    @property
+    def context_type(self) -> type[DateContext]:
+        return DateContext
+
+    @property
+    def result_type(self) -> type[GenericResult]:
+        return GenericResult
+
+    @Flow.call
+    def __call__(self, context: DateContext) -> GenericResult:
+        import polars as pl
+
+        plan = {"as_of": context.date.isoformat(), "listings": self.master.listings.name, "tickers": self.tickers}
+        if self.explain:
+            return GenericResult(value={**plan, "status": "planned"})
+        session = self.master.session(context.date)
+        if session is None:
+            return GenericResult(value={**plan, "status": "no_session"})
+        master = self.master.master(as_of=context.date).collect(engine="streaming")
+        listed = master.filter(pl.col("listed"))
+        resolved = (
+            self.master.lookup(self.tickers, context.date).select("ticker", "security_id", "name", "type").collect()
+            if self.tickers
+            else pl.DataFrame()
+        )
+        ids = [value for value in (resolved["security_id"].to_list() if resolved.height else []) if value]
+        histories = (
+            self.master.history(ids, as_of=context.date)
+            .select("security_id", "ticker", "valid_from", "valid_to", "listed")
+            .sort("security_id", "valid_from")
+            .collect()
+            if ids
+            else pl.DataFrame()
+        )
+        value = {
+            **plan,
+            "status": "ok",
+            "session": session.isoformat(),
+            "security_count": master.height,
+            "listed_count": listed.height,
+            "listed_by_type": {str(kind): count for kind, count in listed.group_by("type").len().sort("len", descending=True).rows()},
+            "resolved": resolved.to_dicts(),
+            "histories": [
+                {**row, "valid_from": row["valid_from"].isoformat(), "valid_to": row["valid_to"].isoformat()} for row in histories.to_dicts()
+            ],
+        }
+        logging.getLogger(self.logger_name).info(
+            "security master as of %s (session %s): %d securities, %d listed", value["as_of"], value["session"], master.height, listed.height
+        )
+        return GenericResult(value=value)
 
 
 class ListingsCoverageModel(CallableModel):
