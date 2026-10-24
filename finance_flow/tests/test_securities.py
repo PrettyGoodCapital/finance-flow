@@ -446,3 +446,35 @@ def test_security_master_prices_follow_a_security_across_ticker_changes(tmp_path
         (date(2025, 1, 8), "NEW", 52.0),
     ]
     assert adjusted.select("ticker", "close", "volume").rows() == [("OLD", 50.0, 2000.0), ("NEW", 51.0, 1000.0), ("NEW", 52.0, 1000.0)]
+
+
+def test_security_master_resolves_any_identifier_as_of_a_date(tmp_path):
+    from finance_flow.securities import SecurityMaster
+
+    listings = _listings_dataset(tmp_path)
+    identifiers = DatasetDefinition(
+        name="identifiers", key_template="curated/identifiers/{date}.parquet", store=LocalFileOutput(path=tmp_path / "store")
+    )
+    for day, ticker in ((date(2025, 1, 6), "OLD"), (date(2025, 1, 8), "NEW")):
+        identifiers.write_frame(
+            day,
+            pl.DataFrame(
+                {
+                    "ticker": [ticker],
+                    "security_id": ["FIGI1"],
+                    "ric": [f"{ticker}.N"],
+                    "bloomberg_ticker": [f"{ticker} US Equity"],
+                    "cusip": ["123456789"],
+                    "company_name": ["Co"],
+                }
+            ),
+        )
+    master = SecurityMaster(
+        listings=listings, symbol_history=listings.model_copy(update={"key_template": "none/{date}.parquet"}), identifiers=identifiers
+    )
+
+    assert master.resolve(["OLD.N"], by="ric", as_of=date(2025, 1, 7)).collect()["security_id"].to_list() == ["FIGI1"]
+    assert master.resolve(["OLD.N"], by="ric", as_of=date(2025, 1, 8)).collect().is_empty()
+    assert master.resolve(["123456789"], by="cusip", as_of=date(2025, 1, 11)).collect()["bloomberg_ticker"].to_list() == ["NEW US Equity"]
+    row = master.master(date(2025, 1, 8)).filter(pl.col("security_id") == "FIGI1").collect().row(0, named=True)
+    assert (row["ticker"], row["ric"], row["cusip"], row["company_name"]) == ("NEW", "NEW.N", "123456789", "Co")

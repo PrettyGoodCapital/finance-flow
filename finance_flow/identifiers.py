@@ -1,7 +1,18 @@
+import gzip
+import json
 import re
+from datetime import date, timedelta
+from typing import Any
+
+from ccflow import CallableModel, DateContext, Flow, GenericResult
+from ccflow_etl import DatasetDefinition
+from pydantic import Field
+
+from .lineage import transform_provenance
 
 __all__ = (
     "RIC_EXCHANGE_SUFFIXES",
+    "SecurityIdentifiersModel",
     "derive_bloomberg_ticker",
     "derive_ric",
     "share_class",
@@ -71,3 +82,194 @@ def share_class(ticker: str | None, name: str | None) -> str | None:
         if len(rest) == 1 and rest.isalpha():
             return rest.upper()
     return None
+
+
+_IDENTIFIER_SCHEMA = {
+    "date": "date",
+    "ticker": "str",
+    "security_id": "str",
+    "composite_figi": "str",
+    "share_class_figi": "str",
+    "name": "str",
+    "type": "str",
+    "mic": "str",
+    "share_class": "str",
+    "ric": "str",
+    "ric_source": "str",
+    "bloomberg_ticker": "str",
+    "openfigi_ticker": "str",
+    "openfigi_exchange": "str",
+    "openfigi_name": "str",
+    "security_type": "str",
+    "cusip": "str",
+    "cusip_date": "date",
+    "isin": "str",
+    "cik": "str",
+    "company_name": "str",
+}
+_CARRIED = ("openfigi_ticker", "openfigi_exchange", "openfigi_name", "security_type", "cusip", "cusip_date")
+
+
+def _schema() -> dict:
+    import polars as pl
+
+    return {name: pl.Date if kind == "date" else pl.String for name, kind in _IDENTIFIER_SCHEMA.items()}
+
+
+class SecurityIdentifiersModel(CallableModel):
+    """Write every listing's identifiers for a session: RIC, Bloomberg ticker, CUSIP, ISIN, CIK, company name, and more.
+
+    Sources, by column:
+
+    - ``ric``: an override dataset where one covers the listing, otherwise derived from the ticker and primary exchange
+      (``ric_source`` says which).
+    - ``bloomberg_ticker``: OpenFIGI's ticker for the security's FIGI while the listing still trades under it, otherwise
+      derived from the listing ticker, which covers dates before a ticker change.
+    - ``cusip``: the session's symbol master (such as the WRDS NYSE TAQ master), or the last one seen, carried forward
+      by security; ``isin`` is computed for US CUSIPs.
+    - ``company_name``: the SEC name of the listing's CIK that was in effect on the session.
+
+    OpenFIGI attributes come from captures of newly listed FIGIs and are carried forward from the previous session's
+    identifiers, so sessions must be built in date order.
+    """
+
+    listings: DatasetDefinition
+    figi_attributes: DatasetDefinition = Field(description="OpenFIGI captures by FIGI: JSONL rows with figi, status, and matches.")
+    cusips: DatasetDefinition | None = Field(default=None, description="Symbol master partitions with symbol and CUSIP columns.")
+    company_names: DatasetDefinition | None = Field(default=None, description="SEC name windows by CIK, one current table (a key without a date).")
+    ric_overrides: DatasetDefinition | None = Field(
+        default=None, description="Licensed RICs by security_id with valid_from and valid_to, one current table (a key without a date)."
+    )
+    output: DatasetDefinition
+    symbol_column: str = "CTA_SYMBOL"
+    cusip_column: str = "CUSIP"
+    lookback_days: int = Field(default=10, ge=1)
+    explain: bool = False
+    overwrite_output: bool = False
+
+    @property
+    def context_type(self) -> type[DateContext]:
+        return DateContext
+
+    @property
+    def result_type(self) -> type[GenericResult]:
+        return GenericResult
+
+    def _previous(self, dataset: DatasetDefinition, value: date, days: int | None = None) -> date | None:
+        sessions = dataset.partitions(value - timedelta(days=days or self.lookback_days), value - timedelta(days=1))
+        return next((day for day in reversed(sessions) if dataset.exists(day)), None)
+
+    def _figi_attributes(self, value: date) -> dict[str, dict[str, Any]]:
+        if not self.figi_attributes.exists(value):
+            return {}
+        attributes = {}
+        for line in gzip.decompress(self.figi_attributes.read_bytes(value)).splitlines():
+            row = json.loads(line)
+            if row.get("matches"):
+                match = row["matches"][0]
+                attributes[row["figi"]] = {
+                    "openfigi_ticker": match.get("ticker"),
+                    "openfigi_exchange": match.get("exchCode"),
+                    "openfigi_name": match.get("name"),
+                    "security_type": match.get("securityType2") or match.get("securityType"),
+                }
+        return attributes
+
+    def _company_names(self, value: date) -> Any:
+        import polars as pl
+
+        # Name windows carry their own dates, so one current table gives the name in effect on any session.
+        if self.company_names is None or not self.company_names.exists(value):
+            return None
+        names = self.company_names.read_frame(value)
+        in_effect = (pl.col("valid_from").is_null() | (pl.col("valid_from") <= value)) & (
+            pl.col("valid_to").is_null() | (pl.col("valid_to") >= value)
+        )
+        return names.filter(in_effect).group_by("cik").agg(pl.col("name").last().alias("company_name"))
+
+    @Flow.call
+    def __call__(self, context: DateContext) -> GenericResult:
+        import polars as pl
+        from finance_etl import isin_from_cusip
+
+        value = context.date
+        plan = {**self.output.plan(value), "listings": self.listings.name}
+        if self.explain:
+            return GenericResult(value={**plan, "status": "planned"})
+        if not self.overwrite_output and self.output.exists(value):
+            return GenericResult(value={**plan, "status": "exists"})
+        if not self.listings.exists(value):
+            return GenericResult(value={**plan, "status": "no_listings"})
+        listings = self.listings.read_frame(value)
+        previous = self._previous(self.output, value)
+        carried = {}
+        if previous is not None:
+            frame = self.output.read_frame(previous).filter(pl.col("security_id").is_not_null())
+            carried = {row["security_id"]: {name: row[name] for name in _CARRIED} for row in frame.select("security_id", *_CARRIED).to_dicts()}
+        fresh = self._figi_attributes(value)
+        cusips = {}
+        if self.cusips is not None and self.cusips.exists(value):
+            master = self.cusips.read_frame(value).select(self.symbol_column, self.cusip_column).drop_nulls()
+            cusips = dict(zip(master[self.symbol_column].to_list(), master[self.cusip_column].to_list(), strict=True))
+        overrides = {}
+        if self.ric_overrides is not None and self.ric_overrides.exists(value):
+            frame = self.ric_overrides.read_frame(value).filter((pl.col("valid_from") <= value) & (pl.col("valid_to") >= value))
+            overrides = dict(zip(frame["security_id"].to_list(), frame["ric"].to_list(), strict=True))
+        rows = []
+        for listing in listings.to_dicts():
+            security_id = listing.get("security_id")
+            row = dict(carried.get(security_id, {})) if security_id else {}
+            row.update(fresh.get(security_id, {}) if security_id else {})
+            ticker, mic = listing.get("ticker"), listing.get("primary_exchange")
+            if ticker in cusips:
+                row["cusip"], row["cusip_date"] = cusips[ticker], value
+            cusip = row.get("cusip")
+            derived = derive_bloomberg_ticker(ticker)
+            openfigi = row.get("openfigi_ticker")
+            if openfigi and derived and derived.split(" ")[0] == openfigi:
+                bloomberg = f"{openfigi} {row.get('openfigi_exchange') or 'US'} Equity"
+            else:
+                bloomberg = derived
+            ric = overrides.get(security_id)
+            cik = listing.get("cik")
+            rows.append(
+                {
+                    **{name: row.get(name) for name in _CARRIED},
+                    "date": value,
+                    "ticker": ticker,
+                    "security_id": security_id,
+                    "composite_figi": listing.get("composite_figi"),
+                    "share_class_figi": listing.get("share_class_figi"),
+                    "name": listing.get("name"),
+                    "type": listing.get("type"),
+                    "mic": mic,
+                    "share_class": share_class(ticker, listing.get("name")),
+                    "ric": ric or derive_ric(ticker, mic),
+                    "ric_source": "override" if ric else ("derived" if derive_ric(ticker, mic) else None),
+                    "bloomberg_ticker": bloomberg,
+                    "isin": isin_from_cusip(cusip) if cusip and cusip[0].isdigit() and len(cusip) == 9 else None,
+                    "cik": f"{int(cik):010d}" if cik else None,
+                }
+            )
+        frame = pl.DataFrame(rows, schema={name: dtype for name, dtype in _schema().items() if name != "company_name"})
+        names = self._company_names(value)
+        frame = frame.join(names, on="cik", how="left") if names is not None else frame.with_columns(pl.lit(None, pl.String).alias("company_name"))
+        frame = frame.select(list(_IDENTIFIER_SCHEMA))
+        quality = {
+            "row_count": frame.height,
+            **{
+                f"{column}_count": frame.height - frame[column].null_count()
+                for column in ("ric", "bloomberg_ticker", "cusip", "isin", "cik", "company_name", "openfigi_ticker")
+            },
+        }
+        lineage = {
+            "sources": {
+                "listings": self.listings.uri(value),
+                "previous": self.output.uri(previous) if previous else None,
+                "figi_attributes": self.figi_attributes.name,
+            },
+            "quality": quality,
+            "transform": transform_provenance(self),
+        }
+        writes = self.output.write_frame(value, frame, lineage=lineage, overwrite=self.overwrite_output)
+        return GenericResult(value={**plan, "status": "written", **quality, "output_writes": writes})

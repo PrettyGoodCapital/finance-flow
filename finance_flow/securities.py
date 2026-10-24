@@ -16,6 +16,7 @@ from .lineage import source_identity, transform_provenance
 __all__ = (
     "ADJUSTMENT_FACTORS_KEY_TEMPLATE",
     "DAILY_BARS_KEY_TEMPLATE",
+    "IDENTIFIERS_KEY_TEMPLATE",
     "LISTINGS_KEY_TEMPLATE",
     "SYMBOL_HISTORY_KEY_TEMPLATE",
     "ListingsCoverageModel",
@@ -444,6 +445,9 @@ LISTINGS_KEY_TEMPLATE = "curated/securities/listings/v1/{year}/{month}/{date}.pa
 SYMBOL_HISTORY_KEY_TEMPLATE = "curated/securities/symbol-history/v1/{year}/{month}/{date}.parquet"
 DAILY_BARS_KEY_TEMPLATE = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.parquet"
 ADJUSTMENT_FACTORS_KEY_TEMPLATE = "curated/securities/adjustment-factors/v1/{year}/{month}/{date}.parquet"
+IDENTIFIERS_KEY_TEMPLATE = "curated/securities/identifiers/v1/{year}/{month}/{date}.parquet"
+_IDENTIFIER_COLUMNS = ("ric", "bloomberg_ticker", "cusip", "isin", "company_name", "mic", "share_class")
+IdentifierKind = Literal["ticker", "security_id", "composite_figi", "share_class_figi", "ric", "bloomberg_ticker", "cusip", "isin", "cik"]
 _MASTER_COLUMNS = (
     "security_id",
     "ticker",
@@ -470,6 +474,9 @@ class SecurityMaster(BaseModel):
     symbol_history: DatasetDefinition
     bars: DatasetDefinition | None = Field(default=None, description="Unadjusted daily bars keyed by ticker, for prices().")
     factors: DatasetDefinition | None = Field(default=None, description="Split and dividend adjustment factors, for adjusted prices().")
+    identifiers: DatasetDefinition | None = Field(
+        default=None, description="Per-listing identifiers (RIC, Bloomberg ticker, CUSIP, ...), for resolve()."
+    )
     lookback_days: int = Field(default=10, ge=1, description="How far back to look for a session, or a stored symbol history, on or before a date.")
 
     @classmethod
@@ -480,6 +487,7 @@ class SecurityMaster(BaseModel):
         symbol_history_key_template: str = SYMBOL_HISTORY_KEY_TEMPLATE,
         bars_key_template: str = DAILY_BARS_KEY_TEMPLATE,
         factors_key_template: str = ADJUSTMENT_FACTORS_KEY_TEMPLATE,
+        identifiers_key_template: str = IDENTIFIERS_KEY_TEMPLATE,
         first_date: date | None = None,
     ) -> "SecurityMaster":
         """A security master over curated datasets stored under a local directory.
@@ -497,9 +505,16 @@ class SecurityMaster(BaseModel):
                 ("symbol-history", symbol_history_key_template),
                 ("bars", bars_key_template),
                 ("factors", factors_key_template),
+                ("identifiers", identifiers_key_template),
             )
         }
-        return cls(listings=datasets["listings"], symbol_history=datasets["symbol-history"], bars=datasets["bars"], factors=datasets["factors"])
+        return cls(
+            listings=datasets["listings"],
+            symbol_history=datasets["symbol-history"],
+            bars=datasets["bars"],
+            factors=datasets["factors"],
+            identifiers=datasets["identifiers"],
+        )
 
     def session(self, as_of: date) -> date | None:
         """The latest listings session on or before ``as_of``."""
@@ -549,7 +564,31 @@ class SecurityMaster(BaseModel):
         history = self.history(as_of=as_of)
         columns = [column for column in _MASTER_COLUMNS if column in history.collect_schema().names()]
         latest = history.sort("security_id", "valid_to", "valid_from").group_by("security_id", maintain_order=True).last().select(columns)
+        identifiers = self.identifiers_as_of(as_of or date.today())
+        if identifiers is not None:
+            extra = [column for column in _IDENTIFIER_COLUMNS if column in identifiers.collect_schema().names()]
+            latest = latest.join(identifiers.select("security_id", *extra).unique("security_id"), on="security_id", how="left")
         return latest.filter(pl.col("listed")) if active_only else latest
+
+    def identifiers_as_of(self, as_of: date) -> Any:
+        """Every listing's identifiers on the latest session on or before ``as_of``, or None without an identifiers dataset."""
+        if self.identifiers is None:
+            return None
+        sessions = self.identifiers.partitions(as_of - timedelta(days=self.lookback_days), as_of)
+        session = next((value for value in reversed(sessions) if self.identifiers.exists(value)), None)
+        return self.identifiers.scan(session, session) if session is not None else None
+
+    def resolve(self, values: list[str], by: IdentifierKind = "ticker", as_of: date | None = None) -> Any:
+        """Listings whose ``by`` identifier is one of ``values`` as of a date, with all their identifiers.
+
+        For example ``resolve(["META.O"], by="ric", as_of=date(2024, 6, 3))`` or ``resolve(["30303M102"], by="cusip")``.
+        """
+        import polars as pl
+
+        identifiers = self.identifiers_as_of(as_of or date.today())
+        if identifiers is None:
+            raise ValueError("SecurityMaster.resolve needs an identifiers dataset.")
+        return identifiers.filter(pl.col(by).is_in(values))
 
     def prices(
         self,
