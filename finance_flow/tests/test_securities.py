@@ -324,3 +324,20 @@ def test_security_listings_carry_identifier_fills_forward(tmp_path):
     assert preferred(2)["security_id"] is None
     sidecar = json.loads((tmp_path / "store" / output.sidecar_key(DAY + timedelta(days=1))).read_text())
     assert sidecar["sources"]["carried_from"].endswith("curated/listings/2025-01-06.parquet")
+
+
+def test_listings_coverage_reports_identified_share_per_session(tmp_path):
+    from ccflow import DateRangeContext
+
+    from finance_flow.securities import ListingsCoverageModel
+
+    model = ListingsCoverageModel(listings=_listings_dataset(tmp_path))
+    context = DateRangeContext(start_date=date(2025, 1, 6), end_date=date(2025, 1, 8))
+
+    result = model(context).value
+
+    assert (result["session_count"], result["listing_days"], result["unresolved_listing_days"]) == (3, 8, 1)
+    assert result["identified"] == {"min": 0.75, "mean": round((0.75 + 1 + 1) / 3, 4), "max": 1.0}
+    assert result["sessions"][0] == {"date": "2025-01-06", "listings": 4, "unresolved": 1}
+    assert (result["last_session"], result["last_session_unresolved"]) == ("2025-01-08", [])
+    assert model.model_copy(update={"explain": True})(context).value["status"] == "planned"

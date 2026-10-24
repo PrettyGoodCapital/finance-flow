@@ -5,11 +5,12 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
-from ccflow import BaseModel, CallableModel, ContextType, DateContext, Flow, GenericResult, GraphDepList
+from ccflow import BaseModel, CallableModel, ContextType, DateContext, DateRangeContext, Flow, GenericResult, GraphDepList
 from ccflow_etl import DatasetDefinition
 from pydantic import Field
 
 __all__ = (
+    "ListingsCoverageModel",
     "ListingsResolutionCheckModel",
     "SecurityListingsModel",
     "SecurityMaster",
@@ -452,6 +453,74 @@ class SecurityMaster(BaseModel):
             pl.col("date").alias(date_col), pl.col("ticker").alias(ticker_col), "security_id", "composite_figi", "share_class_figi"
         )
         return frame.join(listings, on=[date_col, ticker_col], how="left")
+
+
+class ListingsCoverageModel(CallableModel):
+    """Report how many listings have a security ID on each session in a date range, and where their IDs came from."""
+
+    listings: DatasetDefinition
+    explain: bool = False
+    logger_name: str = __name__
+
+    @property
+    def context_type(self) -> type[DateRangeContext]:
+        return DateRangeContext
+
+    @property
+    def result_type(self) -> type[GenericResult]:
+        return GenericResult
+
+    @Flow.call
+    def __call__(self, context: DateRangeContext) -> GenericResult:
+        import polars as pl
+
+        plan = {"start": context.start_date.isoformat(), "end": context.end_date.isoformat(), "listings": self.listings.name}
+        if self.explain:
+            return GenericResult(value={**plan, "status": "planned"})
+        listings = self.listings.scan(context.start_date, context.end_date)
+        if not listings.collect_schema().names():
+            return GenericResult(value={**plan, "status": "empty", "session_count": 0})
+        sessions = (
+            listings.group_by("date")
+            .agg(pl.len().alias("listings"), pl.col("security_id").null_count().alias("unresolved"))
+            .with_columns((1 - pl.col("unresolved") / pl.col("listings")).alias("identified"))
+            .sort("date")
+            .collect(engine="streaming")
+        )
+        columns = listings.collect_schema().names()
+        sources = listings.group_by("figi_source").len().collect(engine="streaming") if "figi_source" in columns else pl.DataFrame()
+        last = sessions["date"].max()
+        unresolved = (
+            listings.filter((pl.col("date") == last) & pl.col("security_id").is_null())
+            .select([column for column in ("ticker", "name", "type", "fill_status") if column in columns])
+            .sort("ticker")
+            .collect()
+        )
+        identified = sessions["identified"]
+        value = {
+            **plan,
+            "status": "ok",
+            "session_count": sessions.height,
+            "identified": {"min": round(identified.min(), 4), "mean": round(identified.mean(), 4), "max": round(identified.max(), 4)},
+            "listing_days": int(sessions["listings"].sum()),
+            "unresolved_listing_days": int(sessions["unresolved"].sum()),
+            "figi_source_counts": {str(source): count for source, count in sources.rows()},
+            "sessions": [{"date": day.isoformat(), "listings": rows, "unresolved": missing} for day, rows, missing, _ in sessions.rows()],
+            "last_session": last.isoformat(),
+            "last_session_unresolved": unresolved.to_dicts(),
+        }
+        logging.getLogger(self.logger_name).info(
+            "listings coverage %s..%s: %d sessions, identified min %.4f mean %.4f max %.4f, %d unresolved on %s",
+            plan["start"],
+            plan["end"],
+            sessions.height,
+            identified.min(),
+            identified.mean(),
+            identified.max(),
+            unresolved.height,
+            value["last_session"],
+        )
+        return GenericResult(value=value)
 
 
 class ListingsResolutionCheckModel(CallableModel):
