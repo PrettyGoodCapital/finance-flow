@@ -128,6 +128,29 @@ def test_massive_daily_bars_flat_file_pipeline_explain_is_io_free(tmp_path):
     assert not list(tmp_path.rglob("*"))
 
 
+def test_massive_daily_bars_flat_file_keys_come_from_datasets(tmp_path):
+    from ccflow_etl import DatasetDefinition
+
+    store = NoOpArtifactStore()
+    model = MassiveDailyBarsFlatFileModel(
+        materializer=ArtifactMaterializeModel(store=store),
+        transform=MassiveDailyBarsFlatFileTransformModel(),
+        local_writer=ArtifactWriteFileModel(store=store),
+        source=DatasetDefinition(name="raw", key_template="raw/{date}.csv.gz", store=store, format="csv.gz"),
+        dataset=DatasetDefinition(name="bars", key_template="bars/{year}/{date}.parquet", store=store),
+        workspace=tmp_path,
+        explain=True,
+    )
+    context = MassiveDailyBarsFlatFileContext(date="2024-01-03")
+
+    assert (model.input_key(context), model.output_key(context), model.sidecar_key(context)) == (
+        "raw/2024-01-03.csv.gz",
+        "bars/2024/2024-01-03.parquet",
+        "bars/2024/2024-01-03.metadata.json",
+    )
+    assert model(context).output_key == "bars/2024/2024-01-03.parquet"
+
+
 def test_massive_daily_bars_flat_file_task_config_resolves_current_task_shape(tmp_path):
     (tmp_path / "runner.yaml").write_text(
         """

@@ -14,6 +14,7 @@ from ccflow_etl import (
     ArtifactWriteFileContext,
     ArtifactWriteFileModel,
     ArtifactWriteFileResult,
+    DatasetDefinition,
 )
 from pydantic import Field
 
@@ -213,6 +214,12 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
     local_writer: ArtifactWriteFileModel
     backup_writer: ArtifactWriteFileModel | None = None
     workspace: Path = Path("data/workspace")
+    source: DatasetDefinition | None = Field(
+        default=None, description="Raw day-aggregate dataset; supplies the input key in place of input_key_template."
+    )
+    dataset: DatasetDefinition | None = Field(
+        default=None, description="Curated daily-bar dataset; supplies the output and sidecar keys in place of their templates."
+    )
     input_key_template: str = "massive/stocks/s3/day-aggs/{year}/{month}/{date}.csv.gz"
     output_key_template: str = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.parquet"
     sidecar_key_template: str = "massive/stocks/curated/bars/daily/v1/{year}/{month}/{date}.metadata.json"
@@ -229,10 +236,10 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
         return MassiveDailyBarsFlatFileResult
 
     def input_key(self, context: MassiveDailyBarsFlatFileContext) -> str:
-        return _format_key(self.input_key_template, context.date)
+        return self.source.key(context.date) if self.source is not None else _format_key(self.input_key_template, context.date)
 
     def output_key(self, context: MassiveDailyBarsFlatFileContext) -> str:
-        return _format_key(self.output_key_template, context.date)
+        return self.dataset.key(context.date) if self.dataset is not None else _format_key(self.output_key_template, context.date)
 
     def source_path(self, context: MassiveDailyBarsFlatFileContext) -> Path:
         return self.workspace / "raw" / self.input_key(context)
@@ -241,7 +248,7 @@ class MassiveDailyBarsFlatFileModel(CallableModel):
         return self.workspace / "curated" / self.output_key(context)
 
     def sidecar_key(self, context: MassiveDailyBarsFlatFileContext) -> str:
-        return _format_key(self.sidecar_key_template, context.date)
+        return self.dataset.sidecar_key(context.date) if self.dataset is not None else _format_key(self.sidecar_key_template, context.date)
 
     def sidecar_path(self, context: MassiveDailyBarsFlatFileContext) -> Path:
         return self.workspace / "curated" / self.sidecar_key(context)
