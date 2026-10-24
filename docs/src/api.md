@@ -94,6 +94,12 @@ securities.lookup(["META"], as_of=date(2024, 6, 3)).collect()    # Meta Platform
 securities.lookup(["FB"], as_of=date(2026, 10, 23)).collect()    # ProShares S&P 500 Dynamic Buffer ETF
 securities.history(["BBG000MM2P62"], as_of=date(2024, 6, 3)).collect()  # FB until 2022-06-09, then META
 
+# Find a security by any identifier as of a date, with all its identifiers
+securities.resolve(["META.O"], by="ric", as_of=date(2024, 6, 3)).collect()
+securities.resolve(["FB US Equity"], by="bloomberg_ticker", as_of=date(2021, 10, 27)).collect()
+securities.resolve(["30303M102"], by="cusip").collect()
+securities.resolve(["0001326801"], by="cik").select("ticker", "ric", "isin", "company_name").collect()
+
 # Daily prices by stable ID: one series across FB -> META, adjusted for splits and dividends known today
 securities.prices(["BBG000MM2P62"], start=date(2022, 5, 16), end=date(2022, 6, 15)).collect()
 # As traded, or adjusted only with events known by a date
@@ -104,6 +110,16 @@ securities.prices(["BBG009S39JX6"], start=date(2022, 5, 16), end=date(2022, 6, 1
 bars = pl.scan_parquet("/data/bars/*.parquet")
 securities.attach_security_id(bars, start=date(2024, 1, 2), end=date(2024, 6, 28))
 ```
+
+Identifiers come from `SecurityIdentifiersModel`, one row per listing per session:
+
+| Column | Source |
+| --- | --- |
+| `ric` | Licensed RICs where an override covers the listing, otherwise derived from the ticker and primary exchange (`BRKb.N`, `ABR_pd.N`); `ric_source` says which |
+| `bloomberg_ticker` | OpenFIGI's ticker for the FIGI while the listing still trades under it (`BRK/B US Equity`), otherwise derived from the listing ticker |
+| `cusip`, `isin` | The session's symbol master (such as the WRDS NYSE TAQ master), carried forward between masters; ISIN computed for US CUSIPs |
+| `cik`, `company_name` | The listing's SEC CIK and the SEC name in effect on the session |
+| `mic`, `share_class` | Primary exchange MIC, and the class letter from the name or ticker |
 
 Everything is computed from data known on `as_of`, so delisted securities keep their last ticker and later ticker
 reuse does not leak backwards. Histories are read from the stored symbol history for the nearest date on or before
