@@ -150,6 +150,9 @@ section-order = [
     "F403",
 ]
 
+[tool.uv.sources]
+finance-etl = { git = "https://github.com/PrettyGoodCapital/finance-etl", branch = "main" }
+
 [tool.yardang]
 title = "finance-flow"
 root = "README.md"
