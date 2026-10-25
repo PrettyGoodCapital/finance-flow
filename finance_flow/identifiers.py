@@ -108,6 +108,8 @@ _IDENTIFIER_SCHEMA = {
     "company_name": "str",
 }
 _CARRIED = ("openfigi_ticker", "openfigi_exchange", "openfigi_name", "security_type", "cusip", "cusip_date")
+# Parsed OpenFIGI captures by partition URI, so a run over many sessions reads each capture once.
+_CAPTURES: dict[str, dict[str, dict[str, Any]]] = {}
 
 
 def _schema() -> dict:
@@ -125,12 +127,11 @@ class SecurityIdentifiersModel(CallableModel):
       (``ric_source`` says which).
     - ``bloomberg_ticker``: OpenFIGI's ticker for the security's FIGI while the listing still trades under it, otherwise
       derived from the listing ticker, which covers dates before a ticker change.
-    - ``cusip``: the session's symbol master (such as the WRDS NYSE TAQ master), or the last one seen, carried forward
-      by security; ``isin`` is computed for US CUSIPs.
+    - ``cusip``: the latest symbol master on or before the session (such as the WRDS NYSE TAQ master); ``isin`` is computed for US CUSIPs.
     - ``company_name``: the SEC name of the listing's CIK that was in effect on the session.
 
-    OpenFIGI attributes come from captures of newly listed FIGIs and are carried forward from the previous session's
-    identifiers, so sessions must be built in date order.
+    Each session is built from its own inputs, so sessions can be built in any order: OpenFIGI attributes come from
+    every capture up to the session, and CUSIPs from the latest symbol master within ``cusip_lookback_days``.
     """
 
     listings: DatasetDefinition
@@ -143,7 +144,7 @@ class SecurityIdentifiersModel(CallableModel):
     output: DatasetDefinition
     symbol_column: str = "CTA_SYMBOL"
     cusip_column: str = "CUSIP"
-    lookback_days: int = Field(default=10, ge=1)
+    cusip_lookback_days: int = Field(default=30, ge=1, description="How far back to look for a symbol master; masters arrive about weekly.")
     explain: bool = False
     overwrite_output: bool = False
 
@@ -155,24 +156,37 @@ class SecurityIdentifiersModel(CallableModel):
     def result_type(self) -> type[GenericResult]:
         return GenericResult
 
-    def _previous(self, dataset: DatasetDefinition, value: date, days: int | None = None) -> date | None:
-        sessions = dataset.partitions(value - timedelta(days=days or self.lookback_days), value - timedelta(days=1))
+    def _latest(self, dataset: DatasetDefinition, value: date, days: int) -> date | None:
+        sessions = dataset.partitions(value - timedelta(days=days), value)
         return next((day for day in reversed(sessions) if dataset.exists(day)), None)
 
+    def _capture(self, value: date) -> dict[str, dict[str, Any]]:
+        uri = self.figi_attributes.uri(value)
+        if uri not in _CAPTURES:
+            attributes = {}
+            for line in gzip.decompress(self.figi_attributes.read_bytes(value)).splitlines():
+                row = json.loads(line)
+                if row.get("matches"):
+                    match = row["matches"][0]
+                    attributes[row["figi"]] = {
+                        "openfigi_ticker": match.get("ticker"),
+                        "openfigi_exchange": match.get("exchCode"),
+                        "openfigi_name": match.get("name"),
+                        "security_type": match.get("securityType2") or match.get("securityType"),
+                    }
+            _CAPTURES[uri] = attributes
+        return _CAPTURES[uri]
+
     def _figi_attributes(self, value: date) -> dict[str, dict[str, Any]]:
-        if not self.figi_attributes.exists(value):
-            return {}
-        attributes = {}
-        for line in gzip.decompress(self.figi_attributes.read_bytes(value)).splitlines():
-            row = json.loads(line)
-            if row.get("matches"):
-                match = row["matches"][0]
-                attributes[row["figi"]] = {
-                    "openfigi_ticker": match.get("ticker"),
-                    "openfigi_exchange": match.get("exchCode"),
-                    "openfigi_name": match.get("name"),
-                    "security_type": match.get("securityType2") or match.get("securityType"),
-                }
+        """OpenFIGI attributes by FIGI from every capture up to ``value``; later captures win."""
+        start = self.figi_attributes.first_date or self.listings.first_date or value
+        local = self.figi_attributes.local_store
+        attributes: dict[str, dict[str, Any]] = {}
+        for day in self.figi_attributes.partitions(start, value):
+            key = self.figi_attributes.key(day)
+            cached = local is not None and hasattr(local, "file_path") and local.file_path(key).exists()
+            if self.figi_attributes.uri(day) in _CAPTURES or cached or self.figi_attributes.exists(day):
+                attributes.update(self._capture(day))
         return attributes
 
     def _company_names(self, value: date) -> Any:
@@ -201,16 +215,18 @@ class SecurityIdentifiersModel(CallableModel):
         if not self.listings.exists(value):
             return GenericResult(value={**plan, "status": "no_listings"})
         listings = self.listings.read_frame(value)
-        previous = self._previous(self.output, value)
-        carried = {}
-        if previous is not None:
-            frame = self.output.read_frame(previous).filter(pl.col("security_id").is_not_null())
-            carried = {row["security_id"]: {name: row[name] for name in _CARRIED} for row in frame.select("security_id", *_CARRIED).to_dicts()}
-        fresh = self._figi_attributes(value)
-        cusips = {}
-        if self.cusips is not None and self.cusips.exists(value):
-            master = self.cusips.read_frame(value).select(self.symbol_column, self.cusip_column).drop_nulls()
-            cusips = dict(zip(master[self.symbol_column].to_list(), master[self.cusip_column].to_list(), strict=True))
+        attributes = self._figi_attributes(value)
+        cusips, cusip_date = {}, None
+        if self.cusips is not None:
+            cusip_date = self._latest(self.cusips, value, self.cusip_lookback_days)
+            if cusip_date is not None:
+                master = self.cusips.read_frame(cusip_date).select(self.symbol_column, self.cusip_column).drop_nulls()
+                cusips = dict(zip(master[self.symbol_column].to_list(), master[self.cusip_column].to_list(), strict=True))
+        # Key CUSIPs by security through the master date's listings, so they follow a ticker change after that date.
+        cusips_by_security = {}
+        if cusips and cusip_date != value and self.listings.exists(cusip_date):
+            then = self.listings.read_frame(cusip_date).select("ticker", "security_id").drop_nulls()
+            cusips_by_security = {figi: cusips[ticker] for ticker, figi in then.iter_rows() if ticker in cusips}
         overrides = {}
         if self.ric_overrides is not None and self.ric_overrides.exists(value):
             frame = self.ric_overrides.read_frame(value).filter((pl.col("valid_from") <= value) & (pl.col("valid_to") >= value))
@@ -218,11 +234,12 @@ class SecurityIdentifiersModel(CallableModel):
         rows = []
         for listing in listings.to_dicts():
             security_id = listing.get("security_id")
-            row = dict(carried.get(security_id, {})) if security_id else {}
-            row.update(fresh.get(security_id, {}) if security_id else {})
+            row = dict(attributes.get(security_id, {})) if security_id else {}
             ticker, mic = listing.get("ticker"), listing.get("primary_exchange")
-            if ticker in cusips:
-                row["cusip"], row["cusip_date"] = cusips[ticker], value
+            cusip = cusips_by_security.get(security_id) if security_id else None
+            cusip = cusip or cusips.get(ticker)
+            if cusip:
+                row["cusip"], row["cusip_date"] = cusip, cusip_date
             cusip = row.get("cusip")
             derived = derive_bloomberg_ticker(ticker)
             openfigi = row.get("openfigi_ticker")
@@ -265,8 +282,8 @@ class SecurityIdentifiersModel(CallableModel):
         lineage = {
             "sources": {
                 "listings": self.listings.uri(value),
-                "previous": self.output.uri(previous) if previous else None,
                 "figi_attributes": self.figi_attributes.name,
+                "cusips": self.cusips.uri(cusip_date) if self.cusips is not None and cusip_date else None,
             },
             "quality": quality,
             "transform": transform_provenance(self),

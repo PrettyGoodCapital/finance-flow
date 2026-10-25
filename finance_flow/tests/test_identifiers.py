@@ -49,7 +49,7 @@ def test_security_identifiers_follow_a_ticker_change(tmp_path):
 
     store = LocalFileOutput(path=tmp_path)
     listings = DatasetDefinition(name="listings", key_template="curated/listings/{date}.parquet", store=store)
-    figis = DatasetDefinition(name="figis", key_template="raw/figi/{date}.jsonl.gz", store=store, format="jsonl.gz")
+    figis = DatasetDefinition(name="figis", key_template="raw/figi/{date}.jsonl.gz", store=store, format="jsonl.gz", first_date=date(2025, 1, 6))
     cusips = DatasetDefinition(name="taq", key_template="raw/taq/{ymd}.parquet", store=store)
     names = DatasetDefinition(name="names", key_template="curated/names/latest.parquet", store=store)
     output = DatasetDefinition(name="identifiers", key_template="curated/identifiers/{date}.parquet", store=store)
@@ -110,8 +110,9 @@ def test_security_identifiers_follow_a_ticker_change(tmp_path):
     )
     model = SecurityIdentifiersModel(listings=listings, figi_attributes=figis, cusips=cusips, company_names=names, output=output)
 
-    model(day1)
+    # Sessions are independent of build order.
     model(day2)
+    model(day1)
     first = {row["ticker"]: row for row in output.read_frame(day1).to_dicts()}
     second = {row["ticker"]: row for row in output.read_frame(day2).to_dicts()}
 

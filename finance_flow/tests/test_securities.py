@@ -326,7 +326,7 @@ def test_security_listings_carry_identifier_fills_forward(tmp_path):
     )
     assert preferred(2)["security_id"] is None
     sidecar = json.loads((tmp_path / "store" / output.sidecar_key(DAY + timedelta(days=1))).read_text())
-    assert sidecar["sources"]["carried_from"]["uri"].endswith("curated/listings/2025-01-06.parquet")
+    assert sidecar["sources"]["carried_from"] == "2025-01-06"
 
 
 def test_listings_coverage_reports_identified_share_per_session(tmp_path):

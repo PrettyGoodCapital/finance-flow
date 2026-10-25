@@ -130,8 +130,8 @@ class SecurityListingsModel(CallableModel):
     ``fills`` are tried in order, and the first match that passes ``figi_fill_status`` supplies the FIGIs. A listing no
     fill can identify keeps blank FIGIs. ``security_id`` is the resolved composite FIGI.
 
-    Identifier fills arrive later than the listings, so a listing an identifier fill resolved on the previous session
-    keeps those FIGIs, with ``fill_status`` ``carried``, while its name and type are unchanged and no fill resolves it.
+    Identifier fills arrive later than the listings, so a session without its own identifier fill uses the latest one
+    within ``carry_lookback_days`` (``fill_status`` ``carried``), for listings whose name and type are unchanged.
     """
 
     snapshot: DatasetDefinition = Field(description="Listings snapshot partitions: JSON with records under records_key.")
@@ -154,7 +154,7 @@ class SecurityListingsModel(CallableModel):
     )
     output: DatasetDefinition
     min_name_overlap: float = Field(default=0.5, ge=0, le=1)
-    carry_lookback_days: int = Field(default=10, ge=1, description="How far back to look for the previous session's listings to carry from.")
+    carry_lookback_days: int = Field(default=30, ge=1, description="How far back to look for an earlier identifier fill to carry from.")
     explain: bool = False
     overwrite_output: bool = False
 
@@ -173,18 +173,35 @@ class SecurityListingsModel(CallableModel):
         return model.context_type.model_validate({"date": value})
 
     def _carried(self, value: date) -> tuple[date | None, dict[str, dict[str, Any]]]:
-        """The previous session's listings resolved by identifier fills, by ticker."""
-        if not self.identifier_fills:
-            return None, {}
-        import polars as pl
+        """Matches from the latest identifier fill before ``value``, by ticker, for sessions that have none of their own.
 
-        sessions = self.output.partitions(value - timedelta(days=self.carry_lookback_days), value - timedelta(days=1))
-        previous = next((day for day in reversed(sessions) if self.output.exists(day)), None)
-        if previous is None:
-            return None, {}
-        frame = self.output.read_frame(previous).filter(pl.col("figi_source").is_in(self.identifier_fills) & pl.col("security_id").is_not_null())
-        rows = frame.select("ticker", "name", "type", "composite_figi", "share_class_figi", "figi_source").to_dicts()
-        return previous, {row["ticker"]: row for row in rows}
+        Reading the fill rather than the previous session's listings keeps each session independent of build order.
+        """
+        for source in self.identifier_fills:
+            dataset = self.fills.get(source)
+            if dataset is None or dataset.exists(value):
+                continue
+            sessions = dataset.partitions(value - timedelta(days=self.carry_lookback_days), value - timedelta(days=1))
+            previous = next((day for day in reversed(sessions) if dataset.exists(day)), None)
+            if previous is None:
+                continue
+            payload = dataset.read_bytes(previous)
+            if dataset.format == "jsonl.gz":
+                payload = gzip.decompress(payload)
+            carried = {}
+            for line in payload.splitlines():
+                row = json.loads(line)
+                if row.get("status") == "matched" and row.get("matches"):
+                    match, record = row["matches"][0], row["record"]
+                    carried[record["ticker"]] = {
+                        "name": record.get("name"),
+                        "type": record.get("type"),
+                        "composite_figi": match.get("compositeFIGI"),
+                        "share_class_figi": match.get("shareClassFIGI"),
+                        "figi_source": source,
+                    }
+            return previous, carried
+        return None, {}
 
     @Flow.deps
     def __deps__(self, context: DateContext) -> GraphDepList:
@@ -313,7 +330,7 @@ class SecurityListingsModel(CallableModel):
             "sources": {
                 "snapshot": source_identity(self.snapshot, context.date),
                 **{source: source_identity(dataset, context.date) for source, dataset in self.fills.items() if dataset.exists(context.date)},
-                **({"carried_from": source_identity(self.output, carried_from)} if carried_from else {}),
+                **({"carried_from": carried_from.isoformat()} if carried_from else {}),
                 **(
                     {"manual_figis": {"path": self.manual_figis, "sha256": sha256(self._manual_figis_text().encode()).hexdigest()}}
                     if self.manual_figis
