@@ -224,7 +224,7 @@ class SecurityIdentifiersModel(CallableModel):
                 cusips = dict(zip(master[self.symbol_column].to_list(), master[self.cusip_column].to_list(), strict=True))
         # Key CUSIPs by security through the master date's listings, so they follow a ticker change after that date.
         cusips_by_security = {}
-        if cusips and cusip_date != value and self.listings.exists(cusip_date):
+        if cusips and cusip_date is not None and cusip_date != value and self.listings.exists(cusip_date):
             then = self.listings.read_frame(cusip_date).select("ticker", "security_id").drop_nulls()
             cusips_by_security = {figi: cusips[ticker] for ticker, figi in then.iter_rows() if ticker in cusips}
         overrides = {}

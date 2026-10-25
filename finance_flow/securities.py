@@ -224,13 +224,13 @@ class SecurityListingsModel(CallableModel):
             fills[source] = rows
         return fills
 
-    def _manual_figis_text(self) -> str:
+    def _manual_figis_text(self, path: str) -> str:
         from importlib.resources import files
 
-        if ":" in self.manual_figis and not self.manual_figis.startswith("/"):
-            package, resource = self.manual_figis.split(":", 1)
+        if ":" in path and not path.startswith("/"):
+            package, resource = path.split(":", 1)
             return files(package).joinpath(resource).read_text()
-        with open(self.manual_figis) as handle:
+        with open(path) as handle:
             return handle.read()
 
     def _manual_figis(self) -> dict[str, list[dict[str, Any]]]:
@@ -239,7 +239,7 @@ class SecurityListingsModel(CallableModel):
         import csv
         import io
 
-        text = self._manual_figis_text()
+        text = self._manual_figis_text(self.manual_figis)
         rows: dict[str, list[dict[str, Any]]] = {}
         for row in csv.DictReader(io.StringIO(text)):
             row["valid_from"], row["valid_to"] = date.fromisoformat(row["valid_from"]), date.fromisoformat(row["valid_to"])
@@ -332,7 +332,7 @@ class SecurityListingsModel(CallableModel):
                 **{source: source_identity(dataset, context.date) for source, dataset in self.fills.items() if dataset.exists(context.date)},
                 **({"carried_from": carried_from.isoformat()} if carried_from else {}),
                 **(
-                    {"manual_figis": {"path": self.manual_figis, "sha256": sha256(self._manual_figis_text().encode()).hexdigest()}}
+                    {"manual_figis": {"path": self.manual_figis, "sha256": sha256(self._manual_figis_text(self.manual_figis).encode()).hexdigest()}}
                     if self.manual_figis
                     else {}
                 ),
