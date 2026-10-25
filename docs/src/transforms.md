@@ -60,8 +60,8 @@ result = MassiveDailyBarsArtifactModel(input_store=store, output=store)(
 The canonical first-wave chain composes four callable tasks with typed handoffs:
 
 1. `BuildUniverseModel`: emits `UniverseMember` rows
-2. `CalculateSignalsModel`: consumes universe rows, emits `SignalRecord` rows
-3. `OptimizePortfolioModel`: consumes signals, emits `OptimizerAllocation` rows
-4. `ConstructTargetPositionsModel`: consumes allocations, emits `TargetPositionRecord` rows
+1. `CalculateSignalsModel`: consumes universe rows, emits `SignalRecord` rows
+1. `OptimizePortfolioModel`: consumes signals, emits `OptimizerAllocation` rows
+1. `ConstructTargetPositionsModel`: consumes allocations, emits `TargetPositionRecord` rows
 
 This chain is validated by the integration test in `finance_flow/tests/test_task_chain_integration.py`.
