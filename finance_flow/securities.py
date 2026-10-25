@@ -861,7 +861,14 @@ class ListingsResolutionCheckModel(CallableModel):
         unresolved = today.filter(pl.col("security_id").is_null()).select(
             [column for column in ("ticker", "name", "type", "fill_status") if column in today.columns]
         )
-        start = self.listings.first_date or self.baseline_date
+        # Only the sessions since the baseline matter, plus the last one before it: a ticker listed then is backlog.
+        # Scanning the whole history would open every partition at once.
+        before = [
+            day
+            for day in self.listings.partitions(self.baseline_date - timedelta(days=self.lookback_days), self.baseline_date - timedelta(days=1))
+            if self.listings.exists(day)
+        ]
+        start = min(before[-1] if before else self.baseline_date, context.date)
         first_seen = (
             self.listings.scan(start, context.date)
             .filter(pl.col("ticker").is_in(unresolved["ticker"].to_list()))
