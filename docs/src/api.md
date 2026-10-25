@@ -113,13 +113,13 @@ securities.attach_security_id(bars, start=date(2024, 1, 2), end=date(2024, 6, 28
 
 Identifiers come from `SecurityIdentifiersModel`, one row per listing per session:
 
-| Column | Source |
-| --- | --- |
-| `ric` | Licensed RICs where an override covers the listing, otherwise derived from the ticker and primary exchange (`BRKb.N`, `ABR_pd.N`); `ric_source` says which |
-| `bloomberg_ticker` | OpenFIGI's ticker for the FIGI while the listing still trades under it (`BRK/B US Equity`), otherwise derived from the listing ticker |
-| `cusip`, `isin` | The session's symbol master (such as the WRDS NYSE TAQ master), carried forward between masters; ISIN computed for US CUSIPs |
-| `cik`, `company_name` | The listing's SEC CIK and the SEC name in effect on the session |
-| `mic`, `share_class` | Primary exchange MIC, and the class letter from the name or ticker |
+| Column                | Source                                                                                                                                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ric`                 | Licensed RICs where an override covers the listing, otherwise derived from the ticker and primary exchange (`BRKb.N`, `ABR_pd.N`); `ric_source` says which |
+| `bloomberg_ticker`    | OpenFIGI's ticker for the FIGI while the listing still trades under it (`BRK/B US Equity`), otherwise derived from the listing ticker                      |
+| `cusip`, `isin`       | The session's symbol master (such as the WRDS NYSE TAQ master), carried forward between masters; ISIN computed for US CUSIPs                               |
+| `cik`, `company_name` | The listing's SEC CIK and the SEC name in effect on the session                                                                                            |
+| `mic`, `share_class`  | Primary exchange MIC, and the class letter from the name or ticker                                                                                         |
 
 Everything is computed from data known on `as_of`, so delisted securities keep their last ticker and later ticker
 reuse does not leak backwards. Histories are read from the stored symbol history for the nearest date on or before
