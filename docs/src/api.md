@@ -125,6 +125,22 @@ Everything is computed from data known on `as_of`, so delisted securities keep t
 reuse does not leak backwards. Histories are read from the stored symbol history for the nearest date on or before
 `as_of`, or computed from the listings when none is stored.
 
+## Macro Data
+
+`load_fred(root, series=None, as_of=None)` returns FRED observations as they were published on `as_of`, from the
+curated vintage table under `root` (`curated/fred/observations/v1/latest.parquet`). Use the session date to get what
+was known by its close; omit `as_of` for current values. `fred_as_of(frame, as_of, series)` applies the same filter to
+an already loaded table.
+
+```python
+from datetime import date
+
+from finance_flow import load_fred
+
+# Payrolls and unemployment as they stood on 2024-06-03, before later revisions
+load_fred("/data", ["PAYEMS", "UNRATE"], as_of=date(2024, 6, 3)).collect()
+```
+
 ## Normalization
 
 ```python
