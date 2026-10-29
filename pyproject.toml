@@ -30,7 +30,7 @@ classifiers = [
 
 dependencies = [
     "ccflow>=0.6.10",
-    "ccflow-etl[fsspec,polars]>=0.4.1",
+    "ccflow-etl[fsspec,polars]>=0.4.2",
     "finance-datagen",
     "finance-etl",
     "polars",
