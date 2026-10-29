@@ -30,12 +30,17 @@ def fred_as_of(observations: Any, as_of: date | None = None, series: list[str] |
     return known.select("series_id", "date", "value", pl.col("valid_from").alias("published")).sort("series_id", "date")
 
 
-def load_fred(root: str | Path, series: list[str] | None = None, as_of: date | None = None) -> Any:
+def load_fred(root: str | Path, series: list[str] | None = None, as_of: date | None = None, storage_options: dict[str, Any] | None = None) -> Any:
     """Load FRED observations as published on ``as_of`` from the curated vintage table under ``root``, as a LazyFrame.
+
+    ``root`` is a local directory or any fsspec URL such as ``s3://bucket/prefix``, read with fsspec ``storage_options``.
 
     For example ``load_fred("/var/lib/airflow/data", ["PAYEMS", "UNRATE"], as_of=date(2024, 6, 3))`` gives payrolls and
     unemployment as they stood on that day, before later revisions.
     """
     import polars as pl
+    from ccflow_etl import FsspecArtifactStore
 
-    return fred_as_of(pl.scan_parquet(Path(root) / FRED_OBSERVATIONS_PATH), as_of=as_of, series=series)
+    store = FsspecArtifactStore(url=str(root), options=storage_options or {})
+    frame = pl.scan_parquet(store.fsspec_url(FRED_OBSERVATIONS_PATH), storage_options=store.polars_storage_options() or None)
+    return fred_as_of(frame, as_of=as_of, series=series)

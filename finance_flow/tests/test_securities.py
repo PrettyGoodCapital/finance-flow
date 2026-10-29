@@ -367,6 +367,8 @@ def test_load_security_master_resolves_securities_as_of_a_date(tmp_path):
     assert master(date(2025, 1, 6)) == [("FIGI1", "OLD", True), ("FIGI2", "STAY", True), ("FIGI3", "GONE", True)]
     assert master(date(2025, 1, 8)) == [("FIGI1", "NEW", True), ("FIGI2", "STAY", True), ("FIGI3", "GONE", False)]
     assert master(date(2025, 1, 11), active_only=True) == [("FIGI1", "NEW", True), ("FIGI2", "STAY", True)]
+    url = load_security_master(f"file://{tmp_path}/data", as_of=date(2025, 1, 8), storage_options={"auto_mkdir": False})
+    assert url.collect().sort("security_id")["ticker"].to_list() == ["NEW", "STAY", "GONE"]
 
     securities = SecurityMaster.from_root(tmp_path / "data")
     assert securities.listings.first_date == date(2025, 1, 6)

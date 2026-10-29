@@ -27,3 +27,5 @@ def test_load_fred_returns_values_as_published_on_a_date(tmp_path):
     assert values(series=["PAYEMS"], as_of=date(2026, 11, 7)) == [("PAYEMS", date(2026, 9, 1), 101.0), ("PAYEMS", date(2026, 10, 1), 102.0)]
     assert values() == [("PAYEMS", date(2026, 9, 1), 101.0), ("PAYEMS", date(2026, 10, 1), 102.0), ("UNRATE", date(2026, 9, 1), 4.1)]
     assert values(as_of=date(2026, 10, 2)) == []
+    # Any fsspec URL reads the same table.
+    assert load_fred(f"file://{tmp_path}", ["UNRATE"]).collect()["value"].to_list() == [4.1]

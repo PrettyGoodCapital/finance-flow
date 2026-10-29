@@ -69,10 +69,11 @@ from finance_flow import DailyBar
 
 ## Security Master
 
-`load_security_master(root, as_of=None, active_only=False)` returns a Polars `LazyFrame` with one row per security known
+`load_security_master(root, as_of=None, active_only=False, storage_options=None)` returns a Polars `LazyFrame` with one row per security known
 on `as_of`: its ticker at that time, name, type, primary exchange, composite and share-class FIGIs, the ticker's
-`valid_from` and `valid_to`, and whether it was still listed. `root` is the directory holding the curated listings, symbol history, daily bars, and adjustment
-factor partitions. The master also carries each security's SEC `cik`.
+`valid_from` and `valid_to`, and whether it was still listed. `root` holds the curated listings, symbol history, daily
+bars, and adjustment factor partitions. It is a local directory or any fsspec URL, such as `s3://bucket/prefix`, read with
+fsspec `storage_options`. The master also carries each security's SEC `cik`.
 
 ```python
 from datetime import date
@@ -127,8 +128,8 @@ reuse does not leak backwards. Histories are read from the stored symbol history
 
 ## Macro Data
 
-`load_fred(root, series=None, as_of=None)` returns FRED observations as they were published on `as_of`, from the
-curated vintage table under `root` (`curated/fred/observations/v1/latest.parquet`). Use the session date to get what
+`load_fred(root, series=None, as_of=None, storage_options=None)` returns FRED observations as they were published on `as_of`, from the
+curated vintage table under `root` (`curated/fred/observations/v1/latest.parquet`), a local directory or fsspec URL. Use the session date to get what
 was known by its close; omit `as_of` for current values. `fred_as_of(frame, as_of, series)` applies the same filter to
 an already loaded table.
 
@@ -139,6 +140,9 @@ from finance_flow import load_fred
 
 # Payrolls and unemployment as they stood on 2024-06-03, before later revisions
 load_fred("/data", ["PAYEMS", "UNRATE"], as_of=date(2024, 6, 3)).collect()
+
+# The same table from object storage
+load_fred("s3://bucket/data", ["UNRATE"], storage_options={"key": "...", "secret": "...", "client_kwargs": {"endpoint_url": "https://s3.example"}})
 ```
 
 ## Normalization

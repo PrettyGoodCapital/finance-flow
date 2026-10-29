@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ccflow import BaseModel, CallableModel, ContextType, DateContext, DateRangeContext, Flow, GenericResult, GraphDepList
-from ccflow_etl import DatasetDefinition, LocalFileOutput
+from ccflow_etl import DatasetDefinition, FsspecArtifactStore
 from pydantic import Field
 
 from .lineage import source_identity, transform_provenance
@@ -506,17 +506,18 @@ class SecurityMaster(BaseModel):
         factors_key_template: str = ADJUSTMENT_FACTORS_KEY_TEMPLATE,
         identifiers_key_template: str = IDENTIFIERS_KEY_TEMPLATE,
         first_date: date | None = None,
+        storage_options: dict[str, Any] | None = None,
     ) -> "SecurityMaster":
-        """A security master over curated datasets stored under a local directory.
+        """A security master over curated datasets under ``root``, a local directory or any fsspec URL such as
+        ``s3://bucket/prefix``, read with fsspec ``storage_options``.
 
         ``first_date``, where computed histories start, defaults to the date of the earliest listings partition.
         """
-        store = LocalFileOutput(path=Path(root))
+        store = FsspecArtifactStore(url=str(root), options=storage_options or {})
         if first_date is None:
-            first_date = _earliest_partition(Path(root) / listings_key_template.split("{", 1)[0])
-        # The same directory as the local store makes scans lazy Parquet reads instead of eager loads.
+            first_date = _earliest_partition(store, listings_key_template.split("{", 1)[0])
         datasets = {
-            name: DatasetDefinition(name=f"securities-{name}", key_template=template, store=store, local_store=store, first_date=first_date)
+            name: DatasetDefinition(name=f"securities-{name}", key_template=template, store=store, first_date=first_date)
             for name, template in (
                 ("listings", listings_key_template),
                 ("symbol-history", symbol_history_key_template),
@@ -645,25 +646,31 @@ class SecurityMaster(BaseModel):
         return frame.join(listings, on=[date_col, ticker_col], how="left")
 
 
-def _earliest_partition(directory: Path) -> date | None:
-    """The earliest date among files named ``<date>.parquet`` under ``directory``."""
+def _earliest_partition(store: FsspecArtifactStore, prefix: str) -> date | None:
+    """The earliest date among keys named ``<date>.parquet`` under ``prefix``."""
     dates = []
-    for path in directory.rglob("*.parquet") if directory.exists() else []:
+    for key in store.list_keys(prefix):
+        if not key.endswith(".parquet"):
+            continue
         try:
-            dates.append(date.fromisoformat(path.stem))
+            dates.append(date.fromisoformat(key.rsplit("/", 1)[-1].removesuffix(".parquet")))
         except ValueError:
             continue
     return min(dates, default=None)
 
 
-def load_security_master(root: str | Path, as_of: date | None = None, active_only: bool = False) -> Any:
+def load_security_master(
+    root: str | Path, as_of: date | None = None, active_only: bool = False, storage_options: dict[str, Any] | None = None
+) -> Any:
     """Load the security master as of a date from curated datasets under ``root``, as a Polars LazyFrame.
+
+    ``root`` is a local directory or any fsspec URL, read with fsspec ``storage_options``.
 
     One row per security known on ``as_of`` (today when omitted) with its ticker at that time, name, type, primary
     exchange, FIGIs, the ticker's ``valid_from``/``valid_to``, and whether it was still listed. For example,
     ``load_security_master("/var/lib/airflow/data", as_of=date(2024, 6, 3), active_only=True)``.
     """
-    return SecurityMaster.from_root(root).master(as_of=as_of, active_only=active_only)
+    return SecurityMaster.from_root(root, storage_options=storage_options).master(as_of=as_of, active_only=active_only)
 
 
 class SecurityMasterReportModel(CallableModel):
