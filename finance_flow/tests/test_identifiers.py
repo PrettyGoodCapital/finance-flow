@@ -47,7 +47,11 @@ def test_security_identifiers_follow_a_ticker_change(tmp_path):
 
     from finance_flow.identifiers import SecurityIdentifiersModel
 
-    store = LocalFileOutput(path=tmp_path)
+    class HeadStore(LocalFileOutput):
+        def head(self, key):
+            return {"etag": f'"{key}"', "size": self.file_path(key).stat().st_size}
+
+    store = HeadStore(path=tmp_path)
     listings = DatasetDefinition(name="listings", key_template="curated/listings/{date}.parquet", store=store)
     figis = DatasetDefinition(name="figis", key_template="raw/figi/{date}.jsonl.gz", store=store, format="jsonl.gz", first_date=date(2025, 1, 6))
     cusips = DatasetDefinition(name="taq", key_template="raw/taq/{ymd}.parquet", store=store)
@@ -135,3 +139,7 @@ def test_security_identifiers_follow_a_ticker_change(tmp_path):
         "derived",
     )
     assert second["BRK.B"]["company_name"] is None
+    # The sidecar records each source object's ETag, so later source changes can be detected.
+    sources = json.loads((tmp_path / output.sidecar_key(day2)).read_text())["sources"]
+    assert sources["listings"]["uri"] == listings.uri(day2) and sources["listings"]["etag"] == f'"{listings.key(day2)}"'
+    assert sources["cusips"]["uri"] == cusips.uri(day1) and sources["cusips"]["etag"] == f'"{cusips.key(day1)}"'

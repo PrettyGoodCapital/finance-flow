@@ -8,7 +8,7 @@ from ccflow import CallableModel, DateContext, Flow, GenericResult
 from ccflow_etl import DatasetDefinition
 from pydantic import Field
 
-from .lineage import transform_provenance
+from .lineage import source_identity, transform_provenance
 
 __all__ = (
     "RIC_EXCHANGE_SUFFIXES",
@@ -281,9 +281,9 @@ class SecurityIdentifiersModel(CallableModel):
         }
         lineage = {
             "sources": {
-                "listings": self.listings.uri(value),
+                "listings": source_identity(self.listings, value),
                 "figi_attributes": self.figi_attributes.name,
-                "cusips": self.cusips.uri(cusip_date) if self.cusips is not None and cusip_date else None,
+                "cusips": source_identity(self.cusips, cusip_date) if self.cusips is not None and cusip_date else None,
             },
             "quality": quality,
             "transform": transform_provenance(self),
