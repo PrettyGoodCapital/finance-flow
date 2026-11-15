@@ -127,10 +127,10 @@ class MassiveDailyBarsFlatFileTransformModel(CallableModel):
             writer = pq.ParquetWriter(temp_path, schema=schema, compression=self.compression, use_dictionary=["ticker"])
             for batch in reader:
                 required = [batch.column(batch.schema.get_field_index(name)) for name in column_types]
-                if any(bool(pc.any(pc.is_null(column)).as_py()) for column in required):  # ty: ignore[unresolved-attribute]
+                if any(bool(pc.any(pc.is_null(column)).as_py()) for column in required):  # ty: ignore[missing-attribute]
                     raise ValueError("Massive daily aggregate contains null required values.")
 
-                ticker = pc.utf8_trim_whitespace(batch.column(batch.schema.get_field_index("ticker")))  # ty: ignore[unresolved-attribute]
+                ticker = pc.utf8_trim_whitespace(batch.column(batch.schema.get_field_index("ticker")))  # ty: ignore[missing-attribute]
                 tickers = ticker.to_pylist()
                 duplicates = seen_tickers.intersection(tickers)
                 batch_tickers: set[str] = set()
@@ -144,16 +144,16 @@ class MassiveDailyBarsFlatFileTransformModel(CallableModel):
 
                 volume = batch.column(batch.schema.get_field_index("volume"))
                 transactions = batch.column(batch.schema.get_field_index("transactions"))
-                if bool(pc.any(pc.less(volume, 0)).as_py()) or bool(pc.any(pc.less(transactions, 0)).as_py()):  # ty: ignore[unresolved-attribute]
+                if bool(pc.any(pc.less(volume, 0)).as_py()) or bool(pc.any(pc.less(transactions, 0)).as_py()):  # ty: ignore[missing-attribute]
                     raise ValueError("Massive daily aggregate volume and transactions must be non-negative.")
 
                 open_ = batch.column(batch.schema.get_field_index("open"))
                 high = batch.column(batch.schema.get_field_index("high"))
                 low = batch.column(batch.schema.get_field_index("low"))
                 close = batch.column(batch.schema.get_field_index("close"))
-                invalid_high = pc.or_(pc.less(high, open_), pc.or_(pc.less(high, low), pc.less(high, close)))  # ty: ignore[unresolved-attribute]
-                invalid_low = pc.or_(pc.greater(low, open_), pc.or_(pc.greater(low, high), pc.greater(low, close)))  # ty: ignore[unresolved-attribute]
-                if bool(pc.any(pc.or_(invalid_high, invalid_low)).as_py()):  # ty: ignore[unresolved-attribute]
+                invalid_high = pc.or_(pc.less(high, open_), pc.or_(pc.less(high, low), pc.less(high, close)))  # ty: ignore[missing-attribute]
+                invalid_low = pc.or_(pc.greater(low, open_), pc.or_(pc.greater(low, high), pc.greater(low, close)))  # ty: ignore[missing-attribute]
+                if bool(pc.any(pc.or_(invalid_high, invalid_low)).as_py()):  # ty: ignore[missing-attribute]
                     raise ValueError("Massive daily aggregate violates OHLC bounds.")
 
                 output_batch = pa.RecordBatch.from_arrays(
@@ -412,22 +412,22 @@ def _parquet_quality(path: Path) -> dict[str, Any]:
     table = pq.read_table(path, columns=["ticker", "open", "high", "low", "close", "volume", "transactions"])
 
     def count(mask: Any) -> int:
-        return int(pc.sum(mask).as_py() or 0)  # ty: ignore[unresolved-attribute]
+        return int(pc.sum(mask).as_py() or 0)  # ty: ignore[missing-attribute]
 
     open_, high, low, close = (table.column(name) for name in ("open", "high", "low", "close"))
     volume, transactions = table.column("volume"), table.column("transactions")
-    ticker_count = int(pc.count_distinct(table.column("ticker")).as_py())  # ty: ignore[unresolved-attribute]
-    invalid_high = pc.or_(pc.less(high, open_), pc.or_(pc.less(high, low), pc.less(high, close)))  # ty: ignore[unresolved-attribute]
-    invalid_low = pc.or_(pc.greater(low, open_), pc.or_(pc.greater(low, high), pc.greater(low, close)))  # ty: ignore[unresolved-attribute]
+    ticker_count = int(pc.count_distinct(table.column("ticker")).as_py())  # ty: ignore[missing-attribute]
+    invalid_high = pc.or_(pc.less(high, open_), pc.or_(pc.less(high, low), pc.less(high, close)))  # ty: ignore[missing-attribute]
+    invalid_low = pc.or_(pc.greater(low, open_), pc.or_(pc.greater(low, high), pc.greater(low, close)))  # ty: ignore[missing-attribute]
     return {
         "row_count": table.num_rows,
         "ticker_count": ticker_count,
         "duplicate_ticker_count": table.num_rows - ticker_count,
         "null_required_count": sum(column.null_count for column in table.columns),
-        "negative_volume_or_transactions_count": count(pc.or_(pc.less(volume, 0), pc.less(transactions, 0))),  # ty: ignore[unresolved-attribute]
-        "ohlc_violation_count": count(pc.or_(invalid_high, invalid_low)),  # ty: ignore[unresolved-attribute]
-        "zero_volume_count": count(pc.equal(volume, 0)),  # ty: ignore[unresolved-attribute]
-        "zero_transactions_count": count(pc.equal(transactions, 0)),  # ty: ignore[unresolved-attribute]
+        "negative_volume_or_transactions_count": count(pc.or_(pc.less(volume, 0), pc.less(transactions, 0))),  # ty: ignore[missing-attribute]
+        "ohlc_violation_count": count(pc.or_(invalid_high, invalid_low)),  # ty: ignore[missing-attribute]
+        "zero_volume_count": count(pc.equal(volume, 0)),  # ty: ignore[missing-attribute]
+        "zero_transactions_count": count(pc.equal(transactions, 0)),  # ty: ignore[missing-attribute]
     }
 
 
