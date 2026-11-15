@@ -4,7 +4,6 @@ from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from ccflow import ModelRegistry
 from pydantic import BaseModel as PydanticBaseModel
 
 __all__ = (
@@ -19,7 +18,7 @@ _RUNTIME_FIELDS = {"meta", "explain", "overwrite_output"}
 def source_identity(dataset: Any, value: date) -> dict[str, Any]:
     """A partition's URI plus the object identity its store reports (ETag, version, size, modification time)."""
     identity: dict[str, Any] = {"uri": dataset.uri(value)}
-    store = ModelRegistry.root()[dataset.store] if isinstance(dataset.store, str) else dataset.store
+    store = dataset.resolved_store()
     head = getattr(store, "head", None)
     if head is not None:
         reported = head(dataset.key(value))

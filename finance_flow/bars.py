@@ -3,7 +3,7 @@ from datetime import date
 from typing import Any
 
 from ccflow import CallableModel, ContextBase, ContextType, DateContext, Flow, GenericResult
-from ccflow_etl import ArtifactReadContext, ArtifactReadModel, ArtifactWriteContext, ArtifactWriteModel, CacheFormatName, PayloadCodec
+from ccflow_etl import ArtifactReadContext, ArtifactReadModel, ArtifactWriteContext, ArtifactWriteModel, CacheFormatName, PayloadCodec, artifact_uri
 from pydantic import BaseModel, field_serializer
 
 __all__ = (
@@ -187,9 +187,9 @@ class MassiveDailyBarsArtifactModel(CallableModel):
             "schema_version": self.schema_version,
             "return_type": self.return_type,
             "input_key": input_key,
-            "input_uri": _artifact_uri(self.input_store, input_key),
+            "input_uri": artifact_uri(self.input_store, input_key),
             "output_key": output_key,
-            "output_uri": _artifact_uri(self.output, output_key),
+            "output_uri": artifact_uri(self.output, output_key),
             "dataset_metadata": self.dataset_metadata(),
             "will_read_input": False,
             "will_publish_output": False,
@@ -274,14 +274,6 @@ def _optional_int(row: dict[str, Any], *names: str) -> int | None:
 
 def _date_value(value: str | date) -> str:
     return value.isoformat() if isinstance(value, date) else str(value)
-
-
-def _artifact_uri(store: Any, key: str) -> str:
-    if hasattr(store, "artifact_uri"):
-        return store.artifact_uri(key)
-    if hasattr(store, "uri"):
-        return store.uri(key)
-    return key
 
 
 def _bar_date(value: Any, fallback: date) -> date:
